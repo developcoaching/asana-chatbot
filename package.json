@@ -1,0 +1,22 @@
+{
+  "name": "asana-coach-bot",
+  "version": "1.0.0",
+  "description": "Asana coaching intelligence bot for Slack",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "explore": "node explore-asana.js",
+    "test-asana": "node -e \"require('./src/asana-client')\" 2>&1 | head -20",
+    "test-query": "node -e \"const q = new (require('./src/query-router'))(); console.log(q.parseQuery('What is the status on Brad?'))\""
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.13.0",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "openai": "^6.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="assets/css/style.css">
+    <title>Asana Coaching Assistant</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" />
+</head>
+
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <h1>Asana Coaching Assistant</h1>
+            <button id="theme-toggle" class="theme-btn">
+                <span class="material-symbols-rounded">dark_mode</span>
+            </button>
+            <button id="clear-chat" class="clear-btn">
+                <span class="material-symbols-rounded">delete</span>
+            </button>
+        </header>
+
+        <!-- Chat Container -->
+        <div class="chat-container" id="chat-container">
+            <div class="welcome-message">
+                <span class="material-symbols-rounded">assistant</span>
+                <h2>Welcome to Asana Coaching Assistant</h2>
+                <p>Ask me about your clients' project status, tasks, and progress.</p>
+                <div class="example-queries">
+                    <p><strong>Try asking:</strong></p>
+                    <ul>
+                        <li>"Give me a status update on [client name]"</li>
+                        <li>"What tasks were completed for [client] this week?"</li>
+                        <li>"Show me [client]'s project progress"</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Typing Container -->
+        <div class="typing-container">
+            <div class="typing-content">
+                <div class="typing-textarea">
+                    <textarea id="chat-input" placeholder="Ask about a client's project..." required></textarea>
+                    <button id="send-btn" class="send-btn">
+                        <span class="material-symbols-rounded">send</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="assets/js/script.js" defer></script>
+</body>
+
+</html>

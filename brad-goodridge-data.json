@@ -1,0 +1,154 @@
+{
+  "project": {
+    "gid": "1199409624394854",
+    "archived": false,
+    "color": "blue",
+    "completed": false,
+    "completed_at": null,
+    "created_at": "2020-12-02T10:30:14.803Z",
+    "current_status": null,
+    "current_status_update": null,
+    "custom_fields": [
+      {
+        "gid": "1103796154808011",
+        "enabled": true,
+        "enum_options": [
+          {
+            "gid": "1103796154808012",
+            "color": "red",
+            "enabled": true,
+            "name": "High",
+            "resource_type": "enum_option"
+          },
+          {
+            "gid": "1103796154808013",
+            "color": "orange",
+            "enabled": true,
+            "name": "Medium",
+            "resource_type": "enum_option"
+          },
+          {
+            "gid": "1103796154808014",
+            "color": "yellow-orange",
+            "enabled": true,
+            "name": "Low",
+            "resource_type": "enum_option"
+          }
+        ],
+        "enum_value": null,
+        "name": "Priority",
+        "description": "Asana-created. Track the priority of each task.",
+        "created_by": null,
+        "display_value": null,
+        "resource_subtype": "enum",
+        "resource_type": "custom_field",
+        "is_formula_field": false,
+        "is_value_read_only": false,
+        "type": "enum"
+      }
+    ],
+    "custom_field_settings": [],
+    "default_access_level": "editor",
+    "default_view": "list",
+    "due_on": null,
+    "due_date": null,
+    "followers": [
+      {
+        "gid": "269621475527348",
+        "name": "Greg Wilkes",
+        "resource_type": "user"
+      }
+    ],
+    "members": [
+      {
+        "gid": "269621475527348",
+        "name": "Greg Wilkes",
+        "resource_type": "user"
+      }
+    ],
+    "minimum_access_level_for_customization": "editor",
+    "minimum_access_level_for_sharing": "editor",
+    "modified_at": "2025-08-13T13:34:14.956Z",
+    "name": "Brad Goodridge",
+    "notes": "",
+    "owner": {
+      "gid": "269621475527348",
+      "name": "Greg Wilkes",
+      "resource_type": "user"
+    },
+    "permalink_url": "https://app.asana.com/1/237098990512572/project/1199409624394854",
+    "privacy_setting": "public_to_workspace",
+    "public": true,
+    "resource_type": "project",
+    "start_on": null,
+    "team": {
+      "gid": "1199409624394859",
+      "name": "Brad Goodridge",
+      "resource_type": "team"
+    },
+    "workspace": {
+      "gid": "237098990512572",
+      "name": "Develop Coaching",
+      "resource_type": "workspace"
+    }
+  },
+  "sections": [
+    {
+      "gid": "1199409624394855",
+      "name": "Untitled section",
+      "resource_type": "section"
+    },
+    {
+      "gid": "1199409624394874",
+      "name": "Issues to deal with",
+      "resource_type": "section"
+    }
+  ],
+  "tasks": [
+    {
+      "gid": "1199409624394866",
+      "completed": false,
+      "name": "Sales is going well booked up until May",
+      "notes": ""
+    },
+    {
+      "gid": "1199409624394868",
+      "completed": false,
+      "name": "Currently using HBXL",
+      "notes": ""
+    },
+    {
+      "gid": "1199409624394870",
+      "completed": false,
+      "name": "Now using Quickbooks for real time profitability. Happy with accounting system",
+      "notes": ""
+    },
+    {
+      "gid": "1199409624394872",
+      "completed": false,
+      "name": "Currently taken a CBILS - £200k in debt (£2.2m) £5k per month of debt",
+      "notes": ""
+    },
+    {
+      "gid": "1199409624394879",
+      "completed": false,
+      "name": "1x project manager looking after 8x jobs, 1x working foreman looking after 3x jobs",
+      "notes": ""
+    },
+    {
+      "gid": "1199409624394875",
+      "completed": false,
+      "name": "Cashflow",
+      "notes": ""
+    }
+  ],
+  "taskDetails": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ],
+  "comments": []
+}
