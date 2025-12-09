@@ -1,5 +1,6 @@
 const { google } = require('googleapis');
 const path = require('path');
+const fs = require('fs');
 const dotenv = require('dotenv');
 
 dotenv.config();
@@ -21,18 +22,38 @@ class GoogleSheetsClient {
     if (this.initialized) return true;
 
     try {
-      this.auth = new google.auth.GoogleAuth({
-        keyFile: this.credentialsPath,
-        scopes: [
-          'https://www.googleapis.com/auth/spreadsheets.readonly',
-          'https://www.googleapis.com/auth/drive.readonly'
-        ],
-      });
+      // Check for base64 encoded credentials in env (for Railway deployment)
+      const base64Creds = process.env.GOOGLE_CREDENTIALS_BASE64;
+
+      if (base64Creds) {
+        // Decode base64 credentials and use directly
+        const credentials = JSON.parse(Buffer.from(base64Creds, 'base64').toString('utf8'));
+        this.auth = new google.auth.GoogleAuth({
+          credentials,
+          scopes: [
+            'https://www.googleapis.com/auth/spreadsheets.readonly',
+            'https://www.googleapis.com/auth/drive.readonly'
+          ],
+        });
+        console.log('✅ Google Sheets client initialized from env');
+      } else if (fs.existsSync(this.credentialsPath)) {
+        // Fall back to file-based credentials (local development)
+        this.auth = new google.auth.GoogleAuth({
+          keyFile: this.credentialsPath,
+          scopes: [
+            'https://www.googleapis.com/auth/spreadsheets.readonly',
+            'https://www.googleapis.com/auth/drive.readonly'
+          ],
+        });
+        console.log('✅ Google Sheets client initialized from file');
+      } else {
+        console.warn('⚠️  No Google credentials found - P&L features disabled');
+        return false;
+      }
 
       this.sheets = google.sheets({ version: 'v4', auth: this.auth });
       this.drive = google.drive({ version: 'v3', auth: this.auth });
       this.initialized = true;
-      console.log('✅ Google Sheets client initialized');
       return true;
     } catch (error) {
       console.error('❌ Failed to initialize Google Sheets client:', error.message);
