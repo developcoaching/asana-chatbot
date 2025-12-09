@@ -5,8 +5,9 @@ dotenv.config();
 
 class SupabaseClient {
   constructor() {
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+    // Trim whitespace/newlines from env vars (Railway can add these)
+    const supabaseUrl = process.env.SUPABASE_URL?.trim();
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY?.trim();
 
     if (!supabaseUrl || !supabaseKey) {
       console.warn('⚠️  Supabase credentials not configured - using in-memory storage');
