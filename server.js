@@ -384,26 +384,15 @@ app.post('/api/chat', async (req, res) => {
       console.log('⚠️  Could not fetch P&L data:', err.message);
     }
 
-    // Check if there's a scheduled meeting in the last comment
-    // If so, search for meeting transcripts
-    let meetingTranscripts = null;
-    if (stats.recentComments && stats.recentComments.length > 0) {
-      const lastComment = stats.recentComments[0]?.comments?.[0]?.text?.toLowerCase() || '';
-      const hasMeetingMention = lastComment.includes('meeting') ||
-                                lastComment.includes('call') ||
-                                lastComment.includes('catch-up') ||
-                                lastComment.includes('catch up') ||
-                                lastComment.includes('schedule') ||
-                                lastComment.includes('1:1') ||
-                                lastComment.includes('1-1');
-
-      if (hasMeetingMention) {
-        console.log('📝 Meeting mentioned in last comment - searching for transcripts...');
-        // Get the date of the last comment to search for transcripts after that
-        const lastCommentDate = stats.recentComments[0]?.comments?.[0]?.date;
-        meetingTranscripts = await asanaClient.getMeetingTranscripts(teamGid, lastCommentDate);
-        stats.meetingTranscripts = meetingTranscripts;
-      }
+    // Always search for meetings in the "1-1 Meetings" section of Progress project
+    // This is where meeting notes/summaries are stored
+    console.log('📝 Searching for meeting transcripts in Progress project sections...');
+    const meetingTranscripts = await asanaClient.getMeetingTranscripts(teamGid, null, projectId);
+    if (meetingTranscripts.found) {
+      stats.meetingTranscripts = meetingTranscripts;
+      console.log(`✅ Found ${meetingTranscripts.transcripts.length} meeting records`);
+    } else {
+      console.log('ℹ️  No meeting transcripts found');
     }
 
     // Generate conversational coaching response

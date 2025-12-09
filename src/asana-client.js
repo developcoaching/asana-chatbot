@@ -319,84 +319,139 @@ class AsanaClient {
   }
 
   /**
-   * Search for meeting transcripts in a team's "Meetings" or "1:1" projects
-   * Meeting transcripts are typically stored in projects named:
-   * - "Meetings" or "Meeting"
-   * - "1:1" or "1-1"
-   * Returns transcripts from tasks created after a given date
+   * Get sections in a project (for finding meeting sections in Progress)
    */
-  async getMeetingTranscripts(teamGid, afterDate = null) {
+  async getProjectSections(projectId) {
+    console.log(`📑 Fetching sections for project ${projectId}...`);
+    try {
+      const response = await this.request(`/projects/${projectId}/sections`);
+      const sections = response.data || [];
+      console.log(`   Found ${sections.length} sections: ${sections.map(s => s.name).join(', ')}`);
+      return sections;
+    } catch (error) {
+      console.error('Error fetching sections:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get tasks in a specific section
+   */
+  async getSectionTasks(sectionGid) {
+    console.log(`📋 Fetching tasks for section ${sectionGid}...`);
+    try {
+      const response = await this.request(
+        `/sections/${sectionGid}/tasks?opt_fields=name,completed,due_on,notes,created_at,modified_at,gid`
+      );
+      return response.data || [];
+    } catch (error) {
+      console.error('Error fetching section tasks:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Search for meeting transcripts - now searches SECTIONS within Progress project first
+   * Meetings are stored in sections named "1-1 Meetings", "Meetings", etc.
+   */
+  async getMeetingTranscripts(teamGid, afterDate = null, progressProjectId = null) {
     console.log(`📝 Searching for meeting transcripts in team ${teamGid}...`);
-    console.log(`   Looking in projects named "Meetings" or "1:1"...`);
 
     try {
-      const projects = await this.getTeamProjects(teamGid);
-      console.log(`   Team has ${projects.length} total projects: ${projects.map(p => p.name).join(', ')}`);
+      const allTranscripts = [];
+      const sectionsSearched = [];
 
-      // Look for Meeting/1:1 projects - these are where transcripts are stored
-      const meetingProjects = projects.filter(p => {
-        const name = p.name.toLowerCase().trim();
-        // Prioritize exact matches first
-        const exactMatch = name === 'meetings' || name === 'meeting' || name === '1:1' || name === '1-1';
-        // Then partial matches
-        const partialMatch = name.includes('meeting') ||
-               name.includes('1:1') ||
-               name.includes('1-1') ||
-               name.includes('one-on-one') ||
-               name.includes('call notes') ||
-               name.includes('transcript');
-        return exactMatch || partialMatch;
-      });
+      // FIRST: Search for meetings in sections within the Progress project
+      if (progressProjectId) {
+        console.log(`   Checking sections within Progress project ${progressProjectId}...`);
+        const sections = await this.getProjectSections(progressProjectId);
 
-      console.log(`📁 Found ${meetingProjects.length} meeting-related projects: ${meetingProjects.map(p => p.name).join(', ')}`);
+        // Find meeting-related sections
+        const meetingSections = sections.filter(s => {
+          const name = s.name.toLowerCase().trim();
+          return name.includes('meeting') ||
+                 name.includes('1-1') ||
+                 name.includes('1:1') ||
+                 name.includes('boardroom') ||
+                 name.includes('call');
+        });
 
-      if (meetingProjects.length === 0) {
-        return { found: false, transcripts: [], projectsSearched: [] };
+        console.log(`📁 Found ${meetingSections.length} meeting sections: ${meetingSections.map(s => s.name).join(', ')}`);
+
+        // Get tasks from meeting sections
+        for (const section of meetingSections.slice(0, 3)) {
+          sectionsSearched.push(section.name);
+          console.log(`🔍 Searching section: ${section.name}`);
+
+          const tasks = await this.getSectionTasks(section.gid);
+          console.log(`   Found ${tasks.length} tasks in section "${section.name}"`);
+
+          // Filter for recent tasks if afterDate provided
+          let relevantTasks = tasks;
+          if (afterDate) {
+            const cutoff = new Date(afterDate);
+            relevantTasks = tasks.filter(t => {
+              const created = new Date(t.created_at);
+              const modified = new Date(t.modified_at);
+              return created >= cutoff || modified >= cutoff;
+            });
+          }
+
+          // Get comments/notes from tasks (meeting notes are in task notes or comments)
+          for (const task of relevantTasks.slice(0, 8)) {
+            const stories = await this.getTaskStories(task.gid);
+            const comments = stories.filter(s => s.type === 'comment' && s.text);
+
+            // Include task if it has notes or comments
+            if (comments.length > 0 || task.notes) {
+              allTranscripts.push({
+                taskName: task.name,
+                taskDate: task.created_at || task.modified_at,
+                notes: task.notes ? task.notes.substring(0, 2000) : null,
+                comments: comments.slice(0, 5).map(c => ({
+                  text: c.text.substring(0, 1000),
+                  date: c.created_at
+                })),
+                sectionName: section.name,
+                projectName: 'Progress'
+              });
+            }
+          }
+        }
       }
 
-      const allTranscripts = [];
-      const projectsSearched = [];
+      // SECOND: Also check for separate Meeting projects (fallback)
+      if (allTranscripts.length === 0) {
+        console.log(`   No meetings in sections, checking separate Meeting projects...`);
+        const projects = await this.getTeamProjects(teamGid);
 
-      // Search each meeting project for transcripts
-      for (const project of meetingProjects.slice(0, 3)) { // Limit to 3 projects
-        projectsSearched.push(project.name);
-        console.log(`🔍 Searching project: ${project.name}`);
+        const meetingProjects = projects.filter(p => {
+          const name = p.name.toLowerCase().trim();
+          return name === 'meetings' || name === 'meeting' ||
+                 name === '1:1' || name === '1-1' ||
+                 name.includes('meeting') || name.includes('1:1');
+        });
 
-        const tasks = await this.getProjectTasks(project.gid);
+        for (const project of meetingProjects.slice(0, 2)) {
+          sectionsSearched.push(`Project: ${project.name}`);
+          const tasks = await this.getProjectTasks(project.gid);
 
-        // Filter for recent tasks if afterDate provided
-        let relevantTasks = tasks;
-        if (afterDate) {
-          const cutoff = new Date(afterDate);
-          relevantTasks = tasks.filter(t => {
-            const created = new Date(t.created_at);
-            const modified = new Date(t.modified_at);
-            return created >= cutoff || modified >= cutoff;
-          });
-        }
+          for (const task of tasks.slice(0, 5)) {
+            const stories = await this.getTaskStories(task.gid);
+            const comments = stories.filter(s => s.type === 'comment' && s.text);
 
-        // Get comments/notes from tasks (transcripts are often in notes or comments)
-        for (const task of relevantTasks.slice(0, 5)) { // Limit to 5 tasks per project
-          const stories = await this.getTaskStories(task.gid);
-          const comments = stories.filter(s => s.type === 'comment' && s.text);
-
-          // Check if task name or notes suggest it's a transcript
-          const isTranscript = task.name.toLowerCase().includes('transcript') ||
-                              task.name.toLowerCase().includes('notes') ||
-                              task.name.toLowerCase().includes('call') ||
-                              task.name.toLowerCase().includes('meeting');
-
-          if (isTranscript || comments.length > 0 || task.notes) {
-            allTranscripts.push({
-              taskName: task.name,
-              taskDate: task.created_at,
-              notes: task.notes ? task.notes.substring(0, 1000) : null,
-              comments: comments.slice(0, 3).map(c => ({
-                text: c.text.substring(0, 500),
-                date: c.created_at
-              })),
-              projectName: project.name
-            });
+            if (comments.length > 0 || task.notes) {
+              allTranscripts.push({
+                taskName: task.name,
+                taskDate: task.created_at,
+                notes: task.notes ? task.notes.substring(0, 2000) : null,
+                comments: comments.slice(0, 5).map(c => ({
+                  text: c.text.substring(0, 1000),
+                  date: c.created_at
+                })),
+                projectName: project.name
+              });
+            }
           }
         }
       }
@@ -404,16 +459,16 @@ class AsanaClient {
       // Sort by date (most recent first)
       allTranscripts.sort((a, b) => new Date(b.taskDate) - new Date(a.taskDate));
 
-      console.log(`✅ Found ${allTranscripts.length} potential transcripts`);
+      console.log(`✅ Found ${allTranscripts.length} meeting transcripts/notes`);
 
       return {
         found: allTranscripts.length > 0,
-        transcripts: allTranscripts.slice(0, 5), // Return top 5
-        projectsSearched
+        transcripts: allTranscripts.slice(0, 8),
+        sectionsSearched
       };
     } catch (error) {
       console.error('Error searching for transcripts:', error.message);
-      return { found: false, transcripts: [], projectsSearched: [], error: error.message };
+      return { found: false, transcripts: [], sectionsSearched: [], error: error.message };
     }
   }
 
