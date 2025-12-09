@@ -24,17 +24,76 @@ app.use(express.static('public'));
 let botHandler = null;
 let slackApp = null;
 
-// In-memory session storage for conversation context
-// In production, move this to Supabase
-const sessions = new Map();
+// Initialize Supabase for persistent storage
+const SupabaseClient = require('./src/supabase-client');
+const supabase = new SupabaseClient();
+
+// Fallback in-memory session storage (used if Supabase not configured)
+const inMemorySessions = new Map();
 
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    bot: botHandler ? 'connected' : 'disconnected'
+    bot: botHandler ? 'connected' : 'disconnected',
+    supabase: supabase.isConnected() ? 'connected' : 'disconnected'
   });
+});
+
+// Get all chat sessions (for sidebar)
+app.get('/api/sessions', async (req, res) => {
+  try {
+    if (!supabase.isConnected()) {
+      return res.json({ sessions: [] });
+    }
+
+    const { data, error } = await supabase.client
+      .from('chat_sessions')
+      .select('*')
+      .order('last_activity', { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+
+    res.json({ sessions: data || [] });
+  } catch (error) {
+    console.error('Error fetching sessions:', error);
+    res.json({ sessions: [] });
+  }
+});
+
+// Get messages for a specific session
+app.get('/api/sessions/:sessionId/messages', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+
+    if (!supabase.isConnected()) {
+      return res.json({ messages: [] });
+    }
+
+    const messages = await supabase.getSessionMessages(sessionId, 100);
+    res.json({ messages });
+  } catch (error) {
+    console.error('Error fetching messages:', error);
+    res.json({ messages: [] });
+  }
+});
+
+// Create new chat session
+app.post('/api/sessions/new', async (req, res) => {
+  try {
+    const sessionId = 'session-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+
+    if (supabase.isConnected()) {
+      await supabase.createSession(sessionId);
+    }
+
+    res.json({ sessionId });
+  } catch (error) {
+    console.error('Error creating session:', error);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Slack webhook endpoint
@@ -108,20 +167,34 @@ app.post('/api/chat', async (req, res) => {
     console.log('💬 Chat message received:', message);
     console.log('🆔 Session ID:', sessionId || 'none');
 
-    // Get or create session
+    // Get or create session (Supabase or in-memory fallback)
     const sid = sessionId || 'default-session';
-    if (!sessions.has(sid)) {
-      sessions.set(sid, {
-        currentClient: null,
-        conversationHistory: []
-      });
-      console.log('✨ New session created:', sid);
+    let session;
+    let conversationHistory = [];
+
+    if (supabase.isConnected()) {
+      // Use Supabase for persistent storage
+      session = await supabase.getOrCreateSession(sid);
+      conversationHistory = await supabase.getConversationHistory(sid, 10);
+      console.log('💾 Supabase session loaded:', sid);
+    } else {
+      // Fallback to in-memory
+      if (!inMemorySessions.has(sid)) {
+        inMemorySessions.set(sid, {
+          currentClient: null,
+          conversationHistory: []
+        });
+        console.log('✨ New in-memory session created:', sid);
+      }
+      session = inMemorySessions.get(sid);
+      conversationHistory = session.conversationHistory;
     }
 
-    const session = sessions.get(sid);
+    const currentClient = supabase.isConnected() ? session?.current_client : session?.currentClient;
     console.log('📊 Session state:', {
-      currentClient: session.currentClient,
-      historyLength: session.conversationHistory.length
+      currentClient: currentClient,
+      historyLength: conversationHistory.length,
+      storage: supabase.isConnected() ? 'Supabase' : 'In-Memory'
     });
 
     // Initialize components
@@ -139,8 +212,8 @@ app.post('/api/chat', async (req, res) => {
     console.log('🤖 Extracting intent with context...');
     const intentResult = await intentExtractor.extractIntent(
       message,
-      session.conversationHistory,
-      session.currentClient
+      conversationHistory,
+      currentClient
     );
     console.log('📊 Intent result:', intentResult);
 
@@ -203,26 +276,54 @@ app.post('/api/chat', async (req, res) => {
     const projectName = clientName_matched; // Use team name as client name
     const stats = await asanaClient.getProjectStats(projectId, timeRange);
 
+    // Check if there's a scheduled meeting in the last comment
+    // If so, search for meeting transcripts
+    let meetingTranscripts = null;
+    if (stats.recentComments && stats.recentComments.length > 0) {
+      const lastComment = stats.recentComments[0]?.comments?.[0]?.text?.toLowerCase() || '';
+      const hasMeetingMention = lastComment.includes('meeting') ||
+                                lastComment.includes('call') ||
+                                lastComment.includes('catch-up') ||
+                                lastComment.includes('catch up') ||
+                                lastComment.includes('schedule') ||
+                                lastComment.includes('1:1') ||
+                                lastComment.includes('1-1');
+
+      if (hasMeetingMention) {
+        console.log('📝 Meeting mentioned in last comment - searching for transcripts...');
+        // Get the date of the last comment to search for transcripts after that
+        const lastCommentDate = stats.recentComments[0]?.comments?.[0]?.date;
+        meetingTranscripts = await asanaClient.getMeetingTranscripts(teamGid, lastCommentDate);
+        stats.meetingTranscripts = meetingTranscripts;
+      }
+    }
+
     // Generate conversational coaching response
     console.log('🎯 Generating coaching response...');
     const responseText = await coachingGenerator.generateResponse(
       message, // The actual question the user asked
       projectName,
       stats,
-      session.conversationHistory
+      conversationHistory
     );
     console.log('✅ Response ready');
 
-    // Update session with conversation history and current client
-    session.conversationHistory.push(
-      { role: 'user', content: message },
-      { role: 'assistant', content: responseText }
-    );
-    session.currentClient = projectName;
+    // Save conversation to Supabase or in-memory
+    if (supabase.isConnected()) {
+      await supabase.saveConversationTurn(sid, message, responseText, projectName);
+      console.log('💾 Conversation saved to Supabase');
+    } else {
+      session.conversationHistory.push(
+        { role: 'user', content: message },
+        { role: 'assistant', content: responseText }
+      );
+      session.currentClient = projectName;
+      console.log('💾 Conversation saved to memory');
+    }
 
     console.log('💾 Session updated:', {
-      currentClient: session.currentClient,
-      historyLength: session.conversationHistory.length
+      currentClient: projectName,
+      storage: supabase.isConnected() ? 'Supabase' : 'In-Memory'
     });
 
     res.json({

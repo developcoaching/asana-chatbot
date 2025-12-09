@@ -22,3 +22,13 @@ Thumbs.db
 # Logs
 logs/
 *.log
+
+# Test and debug files (may contain sensitive data in output)
+debug-*.js
+explore-*.js
+test-*.js
+e2e-*.js
+
+# Temporary files
+*.tmp
+*.temp

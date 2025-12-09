@@ -288,19 +288,182 @@ class AsanaClient {
 
       const topOpen = tasks.filter(t => !t.completed).slice(0, 5);
 
+      // Fetch recent comments for tasks (important for coach/client conversations)
+      console.log('💬 Fetching recent comments...');
+      const recentComments = await this.getRecentComments(tasks.slice(0, 10));
+
       return {
         totalTasks: total,
         completedTasks: completed,
+        completionPercentage: percentComplete,
         percentComplete,
         overdueCount: overdue.length,
+        overdueTasks: overdue.length,
         openTasks: topOpen,
         allTasks: tasks,
         timeRange: timeRange,
+        recentComments: recentComments,
       };
     } catch (error) {
       console.error('❌ Error calculating project stats:', error);
       throw error;
     }
+  }
+
+  /**
+   * Get all projects for a team
+   */
+  async getTeamProjects(teamGid) {
+    const response = await this.request(`/teams/${teamGid}/projects`);
+    return response.data || [];
+  }
+
+  /**
+   * Search for meeting transcripts in a team's "Meetings" or "1:1" projects
+   * Meeting transcripts are typically stored in projects named:
+   * - "Meetings" or "Meeting"
+   * - "1:1" or "1-1"
+   * Returns transcripts from tasks created after a given date
+   */
+  async getMeetingTranscripts(teamGid, afterDate = null) {
+    console.log(`📝 Searching for meeting transcripts in team ${teamGid}...`);
+    console.log(`   Looking in projects named "Meetings" or "1:1"...`);
+
+    try {
+      const projects = await this.getTeamProjects(teamGid);
+      console.log(`   Team has ${projects.length} total projects: ${projects.map(p => p.name).join(', ')}`);
+
+      // Look for Meeting/1:1 projects - these are where transcripts are stored
+      const meetingProjects = projects.filter(p => {
+        const name = p.name.toLowerCase().trim();
+        // Prioritize exact matches first
+        const exactMatch = name === 'meetings' || name === 'meeting' || name === '1:1' || name === '1-1';
+        // Then partial matches
+        const partialMatch = name.includes('meeting') ||
+               name.includes('1:1') ||
+               name.includes('1-1') ||
+               name.includes('one-on-one') ||
+               name.includes('call notes') ||
+               name.includes('transcript');
+        return exactMatch || partialMatch;
+      });
+
+      console.log(`📁 Found ${meetingProjects.length} meeting-related projects: ${meetingProjects.map(p => p.name).join(', ')}`);
+
+      if (meetingProjects.length === 0) {
+        return { found: false, transcripts: [], projectsSearched: [] };
+      }
+
+      const allTranscripts = [];
+      const projectsSearched = [];
+
+      // Search each meeting project for transcripts
+      for (const project of meetingProjects.slice(0, 3)) { // Limit to 3 projects
+        projectsSearched.push(project.name);
+        console.log(`🔍 Searching project: ${project.name}`);
+
+        const tasks = await this.getProjectTasks(project.gid);
+
+        // Filter for recent tasks if afterDate provided
+        let relevantTasks = tasks;
+        if (afterDate) {
+          const cutoff = new Date(afterDate);
+          relevantTasks = tasks.filter(t => {
+            const created = new Date(t.created_at);
+            const modified = new Date(t.modified_at);
+            return created >= cutoff || modified >= cutoff;
+          });
+        }
+
+        // Get comments/notes from tasks (transcripts are often in notes or comments)
+        for (const task of relevantTasks.slice(0, 5)) { // Limit to 5 tasks per project
+          const stories = await this.getTaskStories(task.gid);
+          const comments = stories.filter(s => s.type === 'comment' && s.text);
+
+          // Check if task name or notes suggest it's a transcript
+          const isTranscript = task.name.toLowerCase().includes('transcript') ||
+                              task.name.toLowerCase().includes('notes') ||
+                              task.name.toLowerCase().includes('call') ||
+                              task.name.toLowerCase().includes('meeting');
+
+          if (isTranscript || comments.length > 0 || task.notes) {
+            allTranscripts.push({
+              taskName: task.name,
+              taskDate: task.created_at,
+              notes: task.notes ? task.notes.substring(0, 1000) : null,
+              comments: comments.slice(0, 3).map(c => ({
+                text: c.text.substring(0, 500),
+                date: c.created_at
+              })),
+              projectName: project.name
+            });
+          }
+        }
+      }
+
+      // Sort by date (most recent first)
+      allTranscripts.sort((a, b) => new Date(b.taskDate) - new Date(a.taskDate));
+
+      console.log(`✅ Found ${allTranscripts.length} potential transcripts`);
+
+      return {
+        found: allTranscripts.length > 0,
+        transcripts: allTranscripts.slice(0, 5), // Return top 5
+        projectsSearched
+      };
+    } catch (error) {
+      console.error('Error searching for transcripts:', error.message);
+      return { found: false, transcripts: [], projectsSearched: [], error: error.message };
+    }
+  }
+
+  /**
+   * Get recent comments from tasks (coach/client conversations)
+   * Fetches in parallel for speed
+   */
+  async getRecentComments(tasks, limit = 8) {
+    console.log(`💬 Fetching comments for ${Math.min(tasks.length, 15)} tasks in parallel...`);
+
+    // Fetch comments in parallel for speed (limit to 15 tasks max)
+    const taskPromises = tasks.slice(0, 15).map(async (task) => {
+      try {
+        const stories = await this.getTaskStories(task.gid);
+        const comments = stories.filter(s => s.type === 'comment' && s.text);
+
+        if (comments.length > 0) {
+          // Sort by date descending (most recent first)
+          comments.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+          return {
+            taskName: task.name,
+            taskCompleted: task.completed,
+            taskNotes: task.notes ? task.notes.substring(0, 200) : null,
+            // Get more comments (up to 8) for fuller context
+            comments: comments.slice(0, 8).map(c => ({
+              text: c.text.substring(0, 500), // Allow longer text for context
+              date: c.created_at,
+            })),
+            totalComments: comments.length,
+          };
+        }
+        return null;
+      } catch (err) {
+        return null;
+      }
+    });
+
+    const results = await Promise.all(taskPromises);
+    const tasksWithComments = results.filter(r => r !== null);
+
+    // Sort by most recent comment date
+    tasksWithComments.sort((a, b) => {
+      const aDate = new Date(a.comments[0]?.date || 0);
+      const bDate = new Date(b.comments[0]?.date || 0);
+      return bDate - aDate;
+    });
+
+    console.log(`✅ Found ${tasksWithComments.length} tasks with comments`);
+    return tasksWithComments.slice(0, limit);
   }
 }
 

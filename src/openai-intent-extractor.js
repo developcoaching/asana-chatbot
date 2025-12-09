@@ -1,13 +1,30 @@
 const { OpenAI } = require('openai');
 const dotenv = require('dotenv');
+const fs = require('fs');
+const path = require('path');
 
-// Load environment variables
-dotenv.config();
+// Load environment variables with override
+dotenv.config({ override: true });
 
 class OpenAIIntentExtractor {
   constructor() {
-    // Validate API key exists
-    const apiKey = process.env.OPENAI_API_KEY;
+    // Read API key directly from .env file to avoid system env override
+    let apiKey = process.env.OPENAI_API_KEY;
+
+    // If still getting placeholder, read directly from .env file
+    if (apiKey === 'your-openai-api-key' || apiKey?.startsWith('your-')) {
+      try {
+        const envPath = path.join(__dirname, '..', '.env');
+        const envContent = fs.readFileSync(envPath, 'utf8');
+        const match = envContent.match(/OPENAI_API_KEY=(.+)/);
+        if (match && match[1] && !match[1].startsWith('your-')) {
+          apiKey = match[1].trim();
+          process.env.OPENAI_API_KEY = apiKey; // Update process.env
+        }
+      } catch (e) {
+        console.warn('Could not read .env file directly:', e.message);
+      }
+    }
 
     if (!apiKey) {
       throw new Error('OPENAI_API_KEY is not set in environment variables');
@@ -17,6 +34,7 @@ class OpenAIIntentExtractor {
       throw new Error('OPENAI_API_KEY appears to be a placeholder. Please set a valid API key in .env file');
     }
 
+    // Allow both sk- and sk-proj- prefixes
     if (!apiKey.startsWith('sk-')) {
       throw new Error('OPENAI_API_KEY format is invalid. Should start with "sk-"');
     }
@@ -64,11 +82,20 @@ class OpenAIIntentExtractor {
 - User says "the client", "the project", "this one"
 - General questions: "What's the progress?", "How's it going?"
 
-**When to extract a NEW name:**
-- User says ANY new name: "Jamie", "Tom", "Sarah", "Brad", etc.
+**When to extract a NEW name (SWITCH CLIENT):**
+- User says ANY new name: "Jamie", "Tom", "Sarah", "Brad", "Martin", etc.
 - User says "switch to [name]", "how is [name]", "what about [name]"
+- User says "my last conversation with [name]"
+- User mentions ANY proper name (capitalized first name)
 
-CRITICAL: If ANY new name appears, extract it! Don't stay on "${currentClient}" if a new name is mentioned.`;
+🚨 **CRITICAL - NAME SWITCHING RULES:**
+- If the message contains "Brad" → return "Brad" (NOT "${currentClient}")
+- If the message contains "Martin" → return "Martin" (NOT "${currentClient}")
+- If the message contains ANY name different from "${currentClient}" → return that NEW name
+- ONLY use "${currentClient}" if NO other name appears AND user uses pronouns (he/she/him/her/they)
+
+Example: Current context is "Martin", user asks "What was my last conversation with Brad?"
+→ Return {"clientName": "Brad", ...} because "Brad" is explicitly mentioned!`;
       }
 
       systemPrompt += `\n\n**OUTPUT FORMAT:** {"clientName": "exact name from message or current context", "intent": "what they want to know", "timeRange": "time period or null"}
