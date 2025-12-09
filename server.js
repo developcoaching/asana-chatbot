@@ -202,11 +202,13 @@ app.post('/api/chat', async (req, res) => {
     const OpenAIIntentExtractor = require('./src/openai-intent-extractor');
     const ClientMatcher = require('./src/client-matcher');
     const CoachingResponseGenerator = require('./src/coaching-response-generator');
+    const GoogleSheetsClient = require('./src/google-sheets-client');
 
     const asanaClient = new AsanaClient();
     const intentExtractor = new OpenAIIntentExtractor();
     const clientMatcher = new ClientMatcher();
     const coachingGenerator = new CoachingResponseGenerator();
+    const sheetsClient = new GoogleSheetsClient();
 
     // Extract intent using OpenAI with conversation context
     console.log('🤖 Extracting intent with context...');
@@ -275,6 +277,20 @@ app.post('/api/chat', async (req, res) => {
     const projectId = progressProject.gid;
     const projectName = clientName_matched; // Use team name as client name
     const stats = await asanaClient.getProjectStats(projectId, timeRange);
+
+    // Try to fetch P&L data from Google Sheets (if available)
+    console.log('💰 Checking for P&L data in Google Sheets...');
+    try {
+      const plData = await sheetsClient.getClientPLByName(clientName_matched);
+      if (plData) {
+        console.log(`✅ Found P&L data for ${plData.clientName}`);
+        stats.plData = sheetsClient.formatPLForAI(plData);
+      } else {
+        console.log('ℹ️  No P&L sheet found for this client');
+      }
+    } catch (err) {
+      console.log('⚠️  Could not fetch P&L data:', err.message);
+    }
 
     // Check if there's a scheduled meeting in the last comment
     // If so, search for meeting transcripts

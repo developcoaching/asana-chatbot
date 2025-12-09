@@ -32,3 +32,14 @@ e2e-*.js
 # Temporary files
 *.tmp
 *.temp
+
+# Google credentials
+google-credentials.json
+*-credentials.json
+
+# Utility/exploration scripts (not part of main app)
+list-*.js
+read-*.js
+deep-dive-*.js
+find-*.js
+get-*.js

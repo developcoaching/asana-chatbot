@@ -212,9 +212,17 @@ Remember: You're giving a coach a quick snapshot they can act on immediately. Sh
       recentCompletions,
       recentComments,
       meetingTranscripts,
+      plData,
     } = stats;
 
     let context = `**${clientName} - Project Data**\n\n`;
+
+    // Include P&L financial data if available
+    if (plData) {
+      context += `**FINANCIAL DATA (from P&L Tracker):**\n`;
+      context += plData;
+      context += `\n---\n\n`;
+    }
 
     context += `**Overall Progress:**\n`;
     context += `- Total tasks: ${totalTasks}\n`;
