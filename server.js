@@ -377,8 +377,9 @@ async function start() {
       console.log('   Test endpoints available at /test-asana and /test-query');
     }
 
-    // Start Express server
-    app.listen(PORT, '127.0.0.1', () => {
+    // Start Express server (bind to 0.0.0.0 for Railway/Docker compatibility)
+    const HOST = process.env.HOST || '0.0.0.0';
+    app.listen(PORT, HOST, () => {
       console.log(`🚀 Server running on http://localhost:${PORT}`);
       console.log(`📊 Health check: GET /health`);
       console.log(`🧪 Test Asana: GET /test-asana`);
