@@ -96,6 +96,98 @@ app.post('/api/sessions/new', async (req, res) => {
   }
 });
 
+// Search chat messages
+app.get('/api/search', async (req, res) => {
+  try {
+    const { q } = req.query;
+
+    if (!q || !q.trim()) {
+      return res.json({ results: [] });
+    }
+
+    if (!supabase.isConnected()) {
+      return res.json({ results: [], error: 'Search unavailable' });
+    }
+
+    const searchQuery = q.trim().toLowerCase();
+    console.log('🔍 Searching for:', searchQuery);
+
+    // Search in chat_messages table using ilike for case-insensitive search
+    const { data: messages, error } = await supabase.client
+      .from('chat_messages')
+      .select('id, session_id, role, content, created_at')
+      .or(`content.ilike.%${searchQuery}%`)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+
+    // Group results by session and add context
+    const sessionMap = new Map();
+    for (const msg of messages || []) {
+      if (!sessionMap.has(msg.session_id)) {
+        sessionMap.set(msg.session_id, []);
+      }
+      sessionMap.get(msg.session_id).push(msg);
+    }
+
+    // Get session info for each session
+    const sessionIds = [...sessionMap.keys()];
+    let sessions = [];
+    if (sessionIds.length > 0) {
+      const { data: sessionData } = await supabase.client
+        .from('chat_sessions')
+        .select('session_id, current_client, last_activity')
+        .in('session_id', sessionIds);
+      sessions = sessionData || [];
+    }
+
+    // Build results with session context
+    const results = [];
+    for (const [sessionId, msgs] of sessionMap) {
+      const session = sessions.find(s => s.session_id === sessionId);
+      for (const msg of msgs) {
+        results.push({
+          id: msg.id,
+          sessionId: sessionId,
+          sessionTitle: session?.current_client || 'Conversation',
+          role: msg.role,
+          content: msg.content,
+          createdAt: msg.created_at,
+          // Create a snippet around the match
+          snippet: createSearchSnippet(msg.content, searchQuery)
+        });
+      }
+    }
+
+    console.log(`✅ Found ${results.length} search results`);
+    res.json({ results });
+  } catch (error) {
+    console.error('❌ Search error:', error);
+    res.status(500).json({ error: error.message, results: [] });
+  }
+});
+
+// Helper to create a snippet around the search match
+function createSearchSnippet(content, query) {
+  const lowerContent = content.toLowerCase();
+  const index = lowerContent.indexOf(query);
+
+  if (index === -1) {
+    return content.substring(0, 150) + (content.length > 150 ? '...' : '');
+  }
+
+  const start = Math.max(0, index - 50);
+  const end = Math.min(content.length, index + query.length + 100);
+
+  let snippet = '';
+  if (start > 0) snippet += '...';
+  snippet += content.substring(start, end);
+  if (end < content.length) snippet += '...';
+
+  return snippet;
+}
+
 // Slack webhook endpoint
 app.post('/slack/events', async (req, res) => {
   if (slackApp) {

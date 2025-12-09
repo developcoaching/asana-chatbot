@@ -12,9 +12,15 @@ const sidebar = document.getElementById('sidebar');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
 const conversationsList = document.getElementById('conversations-list');
 
+// Search elements
+const searchInput = document.getElementById('search-input');
+const searchClear = document.getElementById('search-clear');
+const searchResults = document.getElementById('search-results');
+
 // State
 let currentSessionId = null;
 let conversations = [];
+let searchDebounceTimer = null;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -64,6 +70,28 @@ function setupEventListeners() {
                 chatInput.focus();
             }
         });
+    });
+
+    // Search functionality
+    if (searchInput) {
+        searchInput.addEventListener('input', handleSearchInput);
+        searchInput.addEventListener('focus', () => {
+            if (searchInput.value.trim()) {
+                searchResults.style.display = 'block';
+            }
+        });
+    }
+
+    if (searchClear) {
+        searchClear.addEventListener('click', clearSearch);
+    }
+
+    // Close search results when clicking outside
+    document.addEventListener('click', (e) => {
+        if (searchResults && !searchResults.contains(e.target) &&
+            !searchInput.contains(e.target)) {
+            searchResults.style.display = 'none';
+        }
     });
 }
 
@@ -393,4 +421,133 @@ async function sendMessage(userMessage) {
     } finally {
         chatInput.focus();
     }
+}
+
+// Search Functions
+function handleSearchInput(e) {
+    const query = e.target.value.trim();
+
+    // Show/hide clear button
+    if (searchClear) {
+        searchClear.style.display = query ? 'flex' : 'none';
+    }
+
+    // Clear previous timer
+    if (searchDebounceTimer) {
+        clearTimeout(searchDebounceTimer);
+    }
+
+    // Hide results if query is empty
+    if (!query) {
+        searchResults.style.display = 'none';
+        conversationsList.style.display = 'block';
+        return;
+    }
+
+    // Debounce search
+    searchDebounceTimer = setTimeout(() => {
+        performSearch(query);
+    }, 300);
+}
+
+async function performSearch(query) {
+    try {
+        // Show loading state
+        searchResults.innerHTML = `
+            <div class="search-loading">
+                <span class="material-symbols-rounded">search</span>
+                <p>Searching...</p>
+            </div>
+        `;
+        searchResults.style.display = 'block';
+        conversationsList.style.display = 'none';
+
+        const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+        const data = await response.json();
+
+        if (data.error) {
+            throw new Error(data.error);
+        }
+
+        renderSearchResults(data.results, query);
+    } catch (error) {
+        console.error('Search error:', error);
+        searchResults.innerHTML = `
+            <div class="search-no-results">
+                <span class="material-symbols-rounded">error</span>
+                <p>Search error. Please try again.</p>
+            </div>
+        `;
+    }
+}
+
+function renderSearchResults(results, query) {
+    if (!results || results.length === 0) {
+        searchResults.innerHTML = `
+            <div class="search-no-results">
+                <span class="material-symbols-rounded">search_off</span>
+                <p>No results found for "${escapeHtml(query)}"</p>
+            </div>
+        `;
+        return;
+    }
+
+    const html = results.map(result => {
+        const time = formatTime(result.createdAt);
+        const roleIcon = result.role === 'user' ? 'person' : 'smart_toy';
+        const highlightedSnippet = highlightSearchTerms(result.snippet, query);
+
+        return `
+            <div class="search-result-item" data-session-id="${result.sessionId}">
+                <div class="search-result-header">
+                    <span class="material-symbols-rounded">${roleIcon}</span>
+                    <span class="search-result-title">${escapeHtml(result.sessionTitle)}</span>
+                    <span class="search-result-time">${time}</span>
+                </div>
+                <div class="search-result-snippet">${highlightedSnippet}</div>
+            </div>
+        `;
+    }).join('');
+
+    searchResults.innerHTML = html;
+
+    // Add click handlers
+    searchResults.querySelectorAll('.search-result-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const sessionId = item.dataset.sessionId;
+            selectConversation(sessionId);
+            clearSearch();
+
+            // Close mobile sidebar
+            if (window.innerWidth <= 768) {
+                toggleSidebar();
+            }
+        });
+    });
+}
+
+function highlightSearchTerms(text, query) {
+    if (!text || !query) return escapeHtml(text);
+
+    const escaped = escapeHtml(text);
+    const regex = new RegExp(`(${escapeRegex(query)})`, 'gi');
+    return escaped.replace(regex, '<mark class="search-highlight">$1</mark>');
+}
+
+function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function clearSearch() {
+    if (searchInput) {
+        searchInput.value = '';
+    }
+    if (searchClear) {
+        searchClear.style.display = 'none';
+    }
+    if (searchResults) {
+        searchResults.style.display = 'none';
+        searchResults.innerHTML = '';
+    }
+    conversationsList.style.display = 'block';
 }
