@@ -124,12 +124,18 @@ function updateThemeButton(isDark) {
 }
 
 // Load conversations from server
-async function loadConversations() {
+// sidebarOnly: if true, only update sidebar without re-selecting/loading messages
+async function loadConversations(sidebarOnly = false) {
     try {
         const response = await fetch('/api/sessions');
         const data = await response.json();
         conversations = data.sessions || [];
         renderConversationsList();
+
+        // If just updating sidebar, don't reload messages
+        if (sidebarOnly) {
+            return;
+        }
 
         // Check if there's a session ID in sessionStorage
         const savedSessionId = sessionStorage.getItem('asana_session_id');
@@ -296,18 +302,20 @@ function hideWelcomeScreen() {
 }
 
 // Start new chat
-async function startNewChat() {
+async function startNewChat(showWelcome = true) {
     try {
         const response = await fetch('/api/sessions/new', { method: 'POST' });
         const data = await response.json();
         currentSessionId = data.sessionId;
         sessionStorage.setItem('asana_session_id', currentSessionId);
 
-        // Reload conversations to include the new one
-        await loadConversations();
+        // Reload conversations to include the new one (sidebarOnly if not showing welcome)
+        await loadConversations(!showWelcome);
 
-        // Show welcome screen
-        showWelcomeScreen();
+        // Show welcome screen only if explicitly requested (not during message send)
+        if (showWelcome) {
+            showWelcomeScreen();
+        }
 
         // Close mobile sidebar
         if (window.innerWidth <= 768) {
@@ -368,9 +376,9 @@ async function sendMessage(userMessage) {
     chatInput.style.height = 'auto';
     sendBtn.disabled = true;
 
-    // Ensure we have a session
+    // Ensure we have a session (don't show welcome screen since we're sending a message)
     if (!currentSessionId) {
-        await startNewChat();
+        await startNewChat(false);
     }
 
     // Display user message
@@ -411,8 +419,8 @@ async function sendMessage(userMessage) {
             }
         }
 
-        // Reload conversations to update sidebar
-        await loadConversations();
+        // Reload conversations to update sidebar (sidebarOnly=true to not re-fetch messages)
+        await loadConversations(true);
 
     } catch (error) {
         console.error('Error:', error);
