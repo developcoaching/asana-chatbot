@@ -17,16 +17,21 @@ const searchInput = document.getElementById('search-input');
 const searchClear = document.getElementById('search-clear');
 const searchResults = document.getElementById('search-results');
 
+// Login elements
+const loginModal = document.getElementById('login-modal');
+const coachSelect = document.getElementById('coach-select');
+const loginBtn = document.getElementById('login-btn');
+
 // State
 let currentSessionId = null;
 let conversations = [];
 let searchDebounceTimer = null;
+let currentCoachName = null;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     initializeTheme();
-    loadConversations();
-    setupEventListeners();
+    checkCoachLogin();
 });
 
 // Setup event listeners
@@ -171,13 +176,14 @@ function renderConversationsList() {
         const isActive = conv.session_id === currentSessionId;
         const title = conv.current_client || 'New Conversation';
         const time = formatTime(conv.last_activity);
+        const coachName = conv.coach_name || '';
 
         return `
             <div class="conversation-item ${isActive ? 'active' : ''}" data-session-id="${conv.session_id}">
                 <span class="material-symbols-rounded">chat_bubble</span>
                 <div class="conversation-info">
                     <div class="conversation-title">${escapeHtml(title)}</div>
-                    <div class="conversation-preview">${time}</div>
+                    <div class="conversation-preview">${time}${coachName ? ` - ${escapeHtml(coachName)}` : ''}</div>
                 </div>
             </div>
         `;
@@ -247,7 +253,8 @@ function renderMessages(messages) {
 function createMessageHTML(content, role) {
     const isUser = role === 'user';
     const avatar = isUser ? 'person' : 'smart_toy';
-    const roleLabel = isUser ? 'You' : 'Asana Coach';
+    // Show coach name instead of "You" if logged in
+    const roleLabel = isUser ? (currentCoachName || 'You') : 'Asana Coach';
 
     return `
         <div class="message ${role}">
@@ -304,7 +311,11 @@ function hideWelcomeScreen() {
 // Start new chat
 async function startNewChat(showWelcome = true) {
     try {
-        const response = await fetch('/api/sessions/new', { method: 'POST' });
+        const response = await fetch('/api/sessions/new', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ coachName: currentCoachName })
+        });
         const data = await response.json();
         currentSessionId = data.sessionId;
         sessionStorage.setItem('asana_session_id', currentSessionId);
@@ -460,6 +471,14 @@ function handleSearchInput(e) {
 
 async function performSearch(query) {
     try {
+        // Check if searching for a coach with @mention
+        const coachMatch = query.match(/^@(\w+)$/i);
+        if (coachMatch) {
+            const coachName = coachMatch[1];
+            filterConversationsByCoach(coachName);
+            return;
+        }
+
         // Show loading state
         searchResults.innerHTML = `
             <div class="search-loading">
@@ -487,6 +506,69 @@ async function performSearch(query) {
             </div>
         `;
     }
+}
+
+// Filter conversations by coach name
+function filterConversationsByCoach(coachName) {
+    const lowerCoachName = coachName.toLowerCase();
+
+    // Filter conversations that match the coach name
+    const filteredConvs = conversations.filter(conv => {
+        const convCoach = (conv.coach_name || '').toLowerCase();
+        return convCoach.includes(lowerCoachName);
+    });
+
+    if (filteredConvs.length === 0) {
+        searchResults.innerHTML = `
+            <div class="search-no-results">
+                <span class="material-symbols-rounded">person_off</span>
+                <p>No conversations found for @${escapeHtml(coachName)}</p>
+            </div>
+        `;
+        searchResults.style.display = 'block';
+        conversationsList.style.display = 'none';
+        return;
+    }
+
+    // Render filtered conversations as search results
+    const html = `
+        <div class="search-results-header">
+            <span class="material-symbols-rounded">person</span>
+            <span>Conversations by <strong>${escapeHtml(coachName)}</strong></span>
+            <span class="search-count">(${filteredConvs.length})</span>
+        </div>
+        ${filteredConvs.map(conv => {
+            const title = conv.current_client || 'New Conversation';
+            const time = formatTime(conv.last_activity);
+            return `
+                <div class="search-result-item" data-session-id="${conv.session_id}">
+                    <div class="search-result-header">
+                        <span class="material-symbols-rounded">chat_bubble</span>
+                        <span class="search-result-title">${escapeHtml(title)}</span>
+                        <span class="search-result-time">${time}</span>
+                    </div>
+                    <div class="search-result-snippet">Coach: ${escapeHtml(conv.coach_name || 'Unknown')}</div>
+                </div>
+            `;
+        }).join('')}
+    `;
+
+    searchResults.innerHTML = html;
+    searchResults.style.display = 'block';
+    conversationsList.style.display = 'none';
+
+    // Add click handlers
+    searchResults.querySelectorAll('.search-result-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const sessionId = item.dataset.sessionId;
+            selectConversation(sessionId);
+            clearSearch();
+
+            if (window.innerWidth <= 768) {
+                toggleSidebar();
+            }
+        });
+    });
 }
 
 function renderSearchResults(results, query) {
@@ -558,4 +640,141 @@ function clearSearch() {
         searchResults.innerHTML = '';
     }
     conversationsList.style.display = 'block';
+}
+
+// ==========================================
+// COACH LOGIN FUNCTIONS
+// ==========================================
+
+// Check if coach is already logged in
+async function checkCoachLogin() {
+    const savedCoach = localStorage.getItem('asana_coach_name');
+
+    if (savedCoach) {
+        currentCoachName = savedCoach;
+        hideLoginModal();
+        loadConversations();
+        setupEventListeners();
+        addCoachIndicator();
+    } else {
+        showLoginModal();
+        loadCoachesList();
+        setupLoginListeners();
+    }
+}
+
+// Show login modal
+function showLoginModal() {
+    loginModal.classList.remove('hidden');
+}
+
+// Hide login modal
+function hideLoginModal() {
+    loginModal.classList.add('hidden');
+}
+
+// Load list of coaches from server
+async function loadCoachesList() {
+    try {
+        const response = await fetch('/api/coaches');
+        const data = await response.json();
+
+        // Clear and populate select
+        coachSelect.innerHTML = '<option value="">Select your name...</option>';
+
+        (data.coaches || []).forEach(coach => {
+            const option = document.createElement('option');
+            option.value = coach.name;
+            option.textContent = `${coach.name} (${coach.role})`;
+            coachSelect.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Error loading coaches:', error);
+    }
+}
+
+// Setup login event listeners
+function setupLoginListeners() {
+    coachSelect.addEventListener('change', () => {
+        loginBtn.disabled = !coachSelect.value;
+    });
+
+    loginBtn.addEventListener('click', handleCoachLogin);
+}
+
+// Handle coach login
+async function handleCoachLogin() {
+    const selectedCoach = coachSelect.value;
+
+    if (!selectedCoach) return;
+
+    try {
+        // Save to server if we have a session
+        if (currentSessionId) {
+            await fetch('/api/coach/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    coachName: selectedCoach,
+                    sessionId: currentSessionId
+                })
+            });
+        }
+
+        // Save locally
+        currentCoachName = selectedCoach;
+        localStorage.setItem('asana_coach_name', selectedCoach);
+
+        // Hide modal and load app
+        hideLoginModal();
+        loadConversations();
+        setupEventListeners();
+        addCoachIndicator();
+
+    } catch (error) {
+        console.error('Error logging in coach:', error);
+    }
+}
+
+// Add coach indicator to sidebar
+function addCoachIndicator() {
+    // Check if indicator already exists
+    if (document.querySelector('.current-coach-indicator')) {
+        updateCoachIndicator();
+        return;
+    }
+
+    const sidebarHeader = document.querySelector('.sidebar-header');
+    const indicator = document.createElement('div');
+    indicator.className = 'current-coach-indicator';
+    indicator.innerHTML = `
+        <span class="material-symbols-rounded">person</span>
+        <span>Logged in as <span class="coach-name">${escapeHtml(currentCoachName)}</span></span>
+        <button class="change-coach-btn" onclick="changeCoach()">Change</button>
+    `;
+
+    // Insert after sidebar header
+    sidebarHeader.after(indicator);
+}
+
+// Update coach indicator
+function updateCoachIndicator() {
+    const indicator = document.querySelector('.current-coach-indicator .coach-name');
+    if (indicator) {
+        indicator.textContent = currentCoachName;
+    }
+}
+
+// Change coach (show login modal again)
+function changeCoach() {
+    localStorage.removeItem('asana_coach_name');
+    currentCoachName = null;
+
+    // Remove indicator
+    const indicator = document.querySelector('.current-coach-indicator');
+    if (indicator) indicator.remove();
+
+    // Show login modal
+    showLoginModal();
+    loadCoachesList();
 }

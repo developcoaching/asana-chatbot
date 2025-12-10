@@ -226,11 +226,12 @@ class AsanaClient {
 
   /**
    * Get stories (comments/activity) for a task
+   * Now includes author name for coach/client context
    */
   async getTaskStories(taskId) {
     try {
       const response = await this.request(
-        `/tasks/${taskId}/stories?opt_fields=created_at,text,type`
+        `/tasks/${taskId}/stories?opt_fields=created_at,text,type,created_by.name`
       );
       return response.data || [];
     } catch (error) {
@@ -410,7 +411,8 @@ class AsanaClient {
                 notes: task.notes ? task.notes.substring(0, 2000) : null,
                 comments: comments.slice(0, 5).map(c => ({
                   text: c.text.substring(0, 1000),
-                  date: c.created_at
+                  date: c.created_at,
+                  author: c.created_by?.name || 'Unknown' // Include who wrote the comment
                 })),
                 sectionName: section.name,
                 projectName: 'Progress'
@@ -447,7 +449,8 @@ class AsanaClient {
                 notes: task.notes ? task.notes.substring(0, 2000) : null,
                 comments: comments.slice(0, 5).map(c => ({
                   text: c.text.substring(0, 1000),
-                  date: c.created_at
+                  date: c.created_at,
+                  author: c.created_by?.name || 'Unknown' // Include who wrote the comment
                 })),
                 projectName: project.name
               });
@@ -475,6 +478,7 @@ class AsanaClient {
   /**
    * Get recent comments from tasks (coach/client conversations)
    * Fetches in parallel for speed
+   * Now includes author names to distinguish coach from client
    */
   async getRecentComments(tasks, limit = 8) {
     console.log(`💬 Fetching comments for ${Math.min(tasks.length, 15)} tasks in parallel...`);
@@ -493,10 +497,11 @@ class AsanaClient {
             taskName: task.name,
             taskCompleted: task.completed,
             taskNotes: task.notes ? task.notes.substring(0, 200) : null,
-            // Get more comments (up to 8) for fuller context
+            // Get more comments (up to 8) for fuller context - now with author
             comments: comments.slice(0, 8).map(c => ({
               text: c.text.substring(0, 500), // Allow longer text for context
               date: c.created_at,
+              author: c.created_by?.name || 'Unknown', // Include who wrote the comment
             })),
             totalComments: comments.length,
           };

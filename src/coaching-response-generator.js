@@ -236,9 +236,10 @@ Remember: You're giving a coach a quick snapshot they can act on immediately. Sh
     context += `- Overdue: ${overdueTasks} tasks\n`;
     context += `- Open/pending: ${openTasks.length} tasks\n\n`;
 
-    // IMPORTANT: Include recent comments/conversations with FULL context
+    // IMPORTANT: Include recent comments/conversations with FULL context and AUTHOR NAMES
     if (recentComments && recentComments.length > 0) {
       context += `**CONVERSATION HISTORY (Coach/Client Comments - Most Recent First):**\n`;
+      context += `The author name is shown before each comment - this tells you who said what (coach vs client).\n`;
       context += `Use this to understand the ongoing dialogue and write relevant follow-ups:\n\n`;
       recentComments.forEach((item, idx) => {
         context += `--- TASK: "${item.taskName}" (${item.taskCompleted ? 'Completed' : 'Open'}) ---\n`;
@@ -248,7 +249,8 @@ Remember: You're giving a coach a quick snapshot they can act on immediately. Sh
         context += `Total comments on this task: ${item.totalComments}\n`;
         item.comments.forEach(c => {
           const date = new Date(c.date).toLocaleDateString();
-          context += `[${date}] ${c.text}\n`;
+          const author = c.author || 'Unknown';
+          context += `[${date}] **${author}**: ${c.text}\n`;
         });
         context += '\n';
       });
@@ -257,15 +259,18 @@ Remember: You're giving a coach a quick snapshot they can act on immediately. Sh
       context += `**CONVERSATION HISTORY:** No comments found.\n\n`;
     }
 
-    // Add meeting transcripts if found
+    // Add meeting transcripts if found - now with author names
     if (meetingTranscripts) {
       if (meetingTranscripts.found && meetingTranscripts.transcripts.length > 0) {
         context += `**MEETING TRANSCRIPTS/NOTES FOUND:**\n`;
-        context += `(Use these to understand what was discussed in recent meetings)\n\n`;
+        context += `(Use these to understand what was discussed in recent meetings - author names show who wrote what)\n\n`;
         meetingTranscripts.transcripts.forEach((transcript, idx) => {
           const date = new Date(transcript.taskDate).toLocaleDateString();
           context += `--- ${transcript.taskName} (${date}) ---\n`;
           context += `Project: ${transcript.projectName}\n`;
+          if (transcript.sectionName) {
+            context += `Section: ${transcript.sectionName}\n`;
+          }
           if (transcript.notes) {
             context += `Notes: ${transcript.notes}\n`;
           }
@@ -273,7 +278,8 @@ Remember: You're giving a coach a quick snapshot they can act on immediately. Sh
             context += `Comments:\n`;
             transcript.comments.forEach(c => {
               const cDate = new Date(c.date).toLocaleDateString();
-              context += `[${cDate}] ${c.text}\n`;
+              const author = c.author || 'Unknown';
+              context += `[${cDate}] **${author}**: ${c.text}\n`;
             });
           }
           context += '\n';

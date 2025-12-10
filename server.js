@@ -50,7 +50,7 @@ app.get('/api/sessions', async (req, res) => {
 
     const { data, error } = await supabase.client
       .from('chat_sessions')
-      .select('*')
+      .select('session_id, current_client, coach_name, last_activity, created_at')
       .order('last_activity', { ascending: false })
       .limit(50);
 
@@ -83,17 +83,56 @@ app.get('/api/sessions/:sessionId/messages', async (req, res) => {
 // Create new chat session
 app.post('/api/sessions/new', async (req, res) => {
   try {
+    const { coachName } = req.body || {};
     const sessionId = 'session-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
 
     if (supabase.isConnected()) {
-      await supabase.createSession(sessionId);
+      await supabase.createSession(sessionId, null, coachName);
     }
 
-    res.json({ sessionId });
+    res.json({ sessionId, coachName });
   } catch (error) {
     console.error('Error creating session:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Coach login - sets coach name for current/new session
+app.post('/api/coach/login', async (req, res) => {
+  try {
+    const { coachName, sessionId } = req.body;
+
+    if (!coachName || !coachName.trim()) {
+      return res.status(400).json({ error: 'Coach name is required' });
+    }
+
+    const trimmedName = coachName.trim();
+    console.log(`🧑‍🏫 Coach login: ${trimmedName}`);
+
+    // If session exists, update it with coach name
+    if (sessionId && supabase.isConnected()) {
+      await supabase.updateSessionCoach(sessionId, trimmedName);
+      return res.json({ success: true, coachName: trimmedName, sessionId });
+    }
+
+    // Otherwise just return success (coach name will be used when creating new session)
+    res.json({ success: true, coachName: trimmedName });
+  } catch (error) {
+    console.error('Error in coach login:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get list of available coaches (for dropdown)
+app.get('/api/coaches', (req, res) => {
+  // Hardcoded list of coaches - can be moved to env/config later
+  const coaches = [
+    { name: 'Greg', role: 'Lead Coach' },
+    { name: 'Jamie', role: 'Coach' },
+    { name: 'Sarah', role: 'Coach' },
+    { name: 'Mike', role: 'Coach' }
+  ];
+  res.json({ coaches });
 });
 
 // Search chat messages

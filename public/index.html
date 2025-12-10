@@ -124,6 +124,29 @@
     <!-- Mobile Overlay -->
     <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
+    <!-- Coach Login Modal -->
+    <div class="modal-overlay" id="login-modal">
+        <div class="login-modal">
+            <div class="login-header">
+                <span class="material-symbols-rounded">person</span>
+                <h2>Welcome to Asana Coach</h2>
+                <p>Select your name to continue</p>
+            </div>
+            <div class="login-content">
+                <div class="coach-select-container">
+                    <label for="coach-select">I am:</label>
+                    <select id="coach-select">
+                        <option value="">Select your name...</option>
+                    </select>
+                </div>
+                <button class="login-btn" id="login-btn" disabled>
+                    <span class="material-symbols-rounded">login</span>
+                    Continue
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script src="assets/js/script.js" defer></script>
 </body>
 

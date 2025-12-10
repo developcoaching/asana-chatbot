@@ -27,7 +27,7 @@ class SupabaseClient {
   // CHAT SESSIONS
   // ==========================================
 
-  async createSession(sessionId, userId = null) {
+  async createSession(sessionId, userId = null, coachName = null) {
     if (!this.client) return null;
 
     const { data, error } = await this.client
@@ -36,6 +36,7 @@ class SupabaseClient {
         session_id: sessionId,
         user_id: userId,
         current_client: null,
+        coach_name: coachName,
         created_at: new Date().toISOString(),
         last_activity: new Date().toISOString()
       })
@@ -84,6 +85,22 @@ class SupabaseClient {
 
     if (error) {
       console.error('Error updating session client:', error);
+    }
+  }
+
+  async updateSessionCoach(sessionId, coachName) {
+    if (!this.client) return;
+
+    const { error } = await this.client
+      .from('chat_sessions')
+      .update({
+        coach_name: coachName,
+        last_activity: new Date().toISOString()
+      })
+      .eq('session_id', sessionId);
+
+    if (error) {
+      console.error('Error updating session coach:', error);
     }
   }
 
