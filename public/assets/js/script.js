@@ -658,7 +658,7 @@ async function checkCoachLogin() {
         addCoachIndicator();
     } else {
         showLoginModal();
-        loadCoachesList();
+        await loadCoachesList();
         setupLoginListeners();
     }
 }
@@ -679,6 +679,11 @@ async function loadCoachesList() {
         const response = await fetch('/api/coaches');
         const data = await response.json();
 
+        if (!coachSelect) {
+            console.error('Coach select element not found');
+            return;
+        }
+
         // Clear and populate select
         coachSelect.innerHTML = '<option value="">Select your name...</option>';
 
@@ -688,18 +693,61 @@ async function loadCoachesList() {
             option.textContent = `${coach.name} (${coach.role})`;
             coachSelect.appendChild(option);
         });
+
+        console.log('Coaches loaded:', data.coaches?.length || 0);
     } catch (error) {
         console.error('Error loading coaches:', error);
+        // Add fallback coaches if API fails
+        if (coachSelect) {
+            coachSelect.innerHTML = `
+                <option value="">Select your name...</option>
+                <option value="Greg">Greg (Lead Coach)</option>
+                <option value="Jamie">Jamie (Coach)</option>
+                <option value="Sarah">Sarah (Coach)</option>
+                <option value="Mike">Mike (Coach)</option>
+            `;
+        }
     }
 }
 
 // Setup login event listeners
 function setupLoginListeners() {
-    coachSelect.addEventListener('change', () => {
-        loginBtn.disabled = !coachSelect.value;
-    });
+    console.log('Setting up login listeners...');
+    console.log('coachSelect:', coachSelect);
+    console.log('loginBtn:', loginBtn);
 
-    loginBtn.addEventListener('click', handleCoachLogin);
+    if (coachSelect) {
+        coachSelect.addEventListener('change', function() {
+            const value = this.value;
+            console.log('Coach selected:', value);
+            if (loginBtn) {
+                loginBtn.disabled = !value;
+                console.log('Login button disabled:', loginBtn.disabled);
+            }
+        });
+    } else {
+        console.error('coachSelect element not found!');
+    }
+
+    if (loginBtn) {
+        loginBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            console.log('Login button clicked');
+            handleCoachLogin();
+        });
+
+        // Also enable on Enter key in select
+        if (coachSelect) {
+            coachSelect.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && this.value) {
+                    e.preventDefault();
+                    handleCoachLogin();
+                }
+            });
+        }
+    } else {
+        console.error('loginBtn element not found!');
+    }
 }
 
 // Handle coach login
