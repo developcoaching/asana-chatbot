@@ -207,41 +207,259 @@ Remember: You're giving a coach a quick snapshot they can act on immediately. Sh
 
   /**
    * Formats project statistics into a readable context for the AI
+   * Now handles comprehensive data from advanced retrieval
    */
   formatProjectDataForAI(clientName, stats) {
-    const {
-      totalTasks,
-      completedTasks,
-      overdueTasks,
-      completionPercentage,
-      openTasks,
-      recentCompletions,
-      recentComments,
-      meetingTranscripts,
-      plData,
-    } = stats;
+    let context = '';
 
-    let context = `**${clientName} - Project Data**\n\n`;
+    // Show intent for context
+    if (stats.intent) {
+      context += `**Query Type:** ${stats.intent}\n\n`;
+    }
+
+    // ============================================================
+    // MULTI-CLIENT RESULTS - Handle queries about multiple clients
+    // ============================================================
+    if (stats.isMultiClient && stats.multiClientResults && stats.multiClientResults.length > 0) {
+      context += `**MULTI-CLIENT QUERY RESULTS (${stats.multiClientResults.length} clients requested):**\n\n`;
+
+      for (const clientResult of stats.multiClientResults) {
+        context += `------- ${clientResult.clientName} -------\n`;
+
+        if (!clientResult.found) {
+          context += `⚠️ ${clientResult.error || 'Client not found'}\n\n`;
+          continue;
+        }
+
+        // Show conversations for this client
+        if (clientResult.conversations && clientResult.conversations.length > 0) {
+          context += `**Recent Conversations (${clientResult.conversations.length}):**\n`;
+          clientResult.conversations.slice(0, 5).forEach(c => {
+            const date = new Date(c.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+            context += `[${date}] Task: "${c.taskName}" (${c.projectName})\n`;
+            context += `**${c.author}**: ${c.text}\n\n`;
+          });
+        } else if (clientResult.latestConversation) {
+          const c = clientResult.latestConversation;
+          const date = new Date(c.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+          context += `**Latest Conversation:**\n`;
+          context += `[${date}] Task: "${c.taskName}" (${c.projectName})\n`;
+          context += `**${c.author}**: ${c.text}\n\n`;
+        } else {
+          context += `No recent conversations found.\n\n`;
+        }
+      }
+
+      // Return early for multi-client - we've already formatted the data
+      return context;
+    }
+
+    // ============================================================
+    // SINGLE CLIENT - Standard formatting
+    // ============================================================
+    context += `**${clientName} - Data Retrieved**\n\n`;
 
     // Include P&L financial data if available
-    if (plData) {
+    if (stats.plData) {
       context += `**FINANCIAL DATA (from P&L Tracker):**\n`;
-      context += plData;
+      context += stats.plData;
       context += `\n---\n\n`;
     }
 
-    context += `**Overall Progress:**\n`;
-    context += `- Total tasks: ${totalTasks}\n`;
-    context += `- Completed: ${completedTasks} (${completionPercentage}%)\n`;
-    context += `- Overdue: ${overdueTasks} tasks\n`;
-    context += `- Open/pending: ${openTasks.length} tasks\n\n`;
+    // ============================================================
+    // Handle different data types based on what's in stats
+    // ============================================================
 
-    // IMPORTANT: Include recent comments/conversations with FULL context and AUTHOR NAMES
-    if (recentComments && recentComments.length > 0) {
+    // ACTION RESULTS - show confirmation of actions taken
+    if (stats.actionSuccess) {
+      if (stats.createdTask) {
+        context += `**✅ TASK CREATED SUCCESSFULLY:**\n`;
+        context += `- Name: ${stats.createdTask.name}\n`;
+        context += `- ID: ${stats.createdTask.gid}\n\n`;
+      }
+      if (stats.addedComment) {
+        context += `**✅ COMMENT ADDED SUCCESSFULLY:**\n`;
+        context += `- Added to task: ${stats.targetTask?.name || 'Unknown'}\n\n`;
+      }
+      if (stats.updatedTask) {
+        context += `**✅ TASK UPDATED SUCCESSFULLY:**\n`;
+        context += `- Task: ${stats.updatedTask.name}\n\n`;
+      }
+    }
+
+    if (stats.actionError) {
+      context += `**❌ ACTION ERROR:** ${stats.actionError}\n\n`;
+    }
+
+    // LIST OF ALL PROJECTS for this client
+    if (stats.allProjects && stats.allProjects.length > 0) {
+      context += `**ALL PROJECTS FOR ${clientName} (${stats.allProjects.length} total):**\n`;
+      stats.allProjects.forEach((project, idx) => {
+        context += `${idx + 1}. ${project.name}\n`;
+      });
+      context += '\n';
+    }
+
+    // TARGET PROJECT (specific project requested)
+    if (stats.targetProject) {
+      context += `**TARGET PROJECT: ${stats.targetProject.name}**\n`;
+      if (stats.totalTasks !== undefined) {
+        context += `- Total tasks: ${stats.totalTasks}\n`;
+        context += `- Completed: ${stats.completedTasks || 0}\n`;
+      }
+      context += '\n';
+    }
+
+    if (stats.projectNotFound) {
+      context += `**⚠️ PROJECT NOT FOUND:** Could not find project "${stats.projectNotFound}"\n`;
+      if (stats.allProjects) {
+        context += `Available projects: ${stats.allProjects.map(p => p.name).join(', ')}\n`;
+      }
+      context += '\n';
+    }
+
+    // TARGET TASK (specific task requested)
+    if (stats.targetTask) {
+      context += `**TARGET TASK FOUND:**\n`;
+      context += `- Name: ${stats.targetTask.name}\n`;
+      context += `- Status: ${stats.targetTask.completed ? 'Completed' : 'Open'}\n`;
+      if (stats.targetTask.due_on) {
+        context += `- Due: ${stats.targetTask.due_on}\n`;
+      }
+      if (stats.targetTask.assignee?.name) {
+        context += `- Assignee: ${stats.targetTask.assignee.name}\n`;
+      }
+      if (stats.targetTask.notes) {
+        context += `- Description: ${stats.targetTask.notes.substring(0, 500)}\n`;
+      }
+      context += '\n';
+
+      // Task subtasks
+      if (stats.targetTaskSubtasks && stats.targetTaskSubtasks.length > 0) {
+        context += `**Subtasks (${stats.targetTaskSubtasks.length}):**\n`;
+        stats.targetTaskSubtasks.forEach((st, idx) => {
+          context += `  ${idx + 1}. ${st.completed ? '✅' : '⬜'} ${st.name}\n`;
+        });
+        context += '\n';
+      } else if (stats.targetTask.subtasks && stats.targetTask.subtasks.length > 0) {
+        context += `**Subtasks (${stats.targetTask.subtasks.length}):**\n`;
+        stats.targetTask.subtasks.forEach((st, idx) => {
+          context += `  ${idx + 1}. ${st.completed ? '✅' : '⬜'} ${st.name}\n`;
+        });
+        context += '\n';
+      }
+
+      // Task attachments
+      if (stats.targetTaskAttachments && stats.targetTaskAttachments.length > 0) {
+        context += `**Attachments (${stats.targetTaskAttachments.length}):**\n`;
+        stats.targetTaskAttachments.forEach((att, idx) => {
+          context += `  ${idx + 1}. 📎 ${att.name}\n`;
+        });
+        context += '\n';
+      } else if (stats.targetTask.attachments && stats.targetTask.attachments.length > 0) {
+        context += `**Attachments (${stats.targetTask.attachments.length}):**\n`;
+        stats.targetTask.attachments.forEach((att, idx) => {
+          context += `  ${idx + 1}. 📎 ${att.name}\n`;
+        });
+        context += '\n';
+      }
+    }
+
+    if (stats.taskNotFound) {
+      context += `**⚠️ TASK NOT FOUND:** Could not find task "${stats.taskNotFound}"\n\n`;
+    }
+
+    // TARGET TASK COMMENTS (from specific task or date search)
+    if (stats.targetTaskComments && stats.targetTaskComments.length > 0) {
+      context += `**COMMENTS FROM TASK "${stats.targetTask?.name || 'Task'}" (${stats.targetTaskComments.length} found):**\n`;
+      stats.targetTaskComments.forEach(c => {
+        const date = new Date(c.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+        context += `[${date}] **${c.author}**: ${c.text}\n`;
+      });
+      context += '\n';
+    }
+
+    // TARGET COMMENTS (from date-based search across projects)
+    if (stats.targetComments && stats.targetComments.length > 0) {
+      context += `**COMMENTS FOUND (${stats.targetComments.length}):**\n`;
+      stats.targetComments.forEach(item => {
+        const date = new Date(item.comment?.date || item.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+        const author = item.comment?.author || item.author || 'Unknown';
+        const text = item.comment?.text || item.text;
+        const taskName = item.taskName || 'Unknown task';
+        context += `--- Task: "${taskName}" ---\n`;
+        context += `[${date}] **${author}**: ${text}\n\n`;
+      });
+    }
+
+    // ALL CONVERSATIONS (get_conversation intent)
+    if (stats.conversations && stats.conversations.length > 0) {
+      context += `**ALL RECENT CONVERSATIONS (${stats.conversations.length} comments, most recent first):**\n`;
+      stats.conversations.forEach(c => {
+        const date = new Date(c.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+        context += `[${date}] Task: "${c.taskName}" (${c.projectName})\n`;
+        context += `**${c.author}**: ${c.text}\n\n`;
+      });
+    }
+
+    // SEARCH RESULTS (search_tasks intent)
+    if (stats.searchResults && stats.searchResults.length > 0) {
+      context += `**SEARCH RESULTS (${stats.searchResults.length} tasks found):**\n`;
+      stats.searchResults.forEach((task, idx) => {
+        const status = task.completed ? '✅' : '⬜';
+        context += `${idx + 1}. ${status} ${task.name}`;
+        if (task.projectName) context += ` (${task.projectName})`;
+        context += '\n';
+        if (task.notes) {
+          context += `   Notes: ${task.notes.substring(0, 200)}...\n`;
+        }
+      });
+      context += '\n';
+    }
+
+    // ATTACHMENTS (get_attachments intent)
+    if (stats.attachments && stats.attachments.length > 0) {
+      context += `**ATTACHMENTS FOUND (${stats.attachments.length}):**\n`;
+      stats.attachments.forEach((att, idx) => {
+        const date = att.created_at ? new Date(att.created_at).toLocaleDateString() : 'Unknown date';
+        context += `${idx + 1}. 📎 ${att.name} (${date})\n`;
+      });
+      context += '\n';
+    }
+
+    // STANDARD STATS (from default status flow)
+    if (stats.totalTasks !== undefined && !stats.targetProject && !stats.allProjects) {
+      context += `**Overall Progress:**\n`;
+      context += `- Total tasks: ${stats.totalTasks}\n`;
+      context += `- Completed: ${stats.completedTasks || 0} (${stats.completionPercentage || 0}%)\n`;
+      context += `- Overdue: ${stats.overdueTasks || 0} tasks\n`;
+      if (stats.openTasks) {
+        context += `- Open/pending: ${stats.openTasks.length} tasks\n`;
+      }
+      context += '\n';
+    }
+
+    // TASKS LIST (list_tasks intent or from comprehensive data)
+    if (stats.tasks && stats.tasks.length > 0 && !stats.searchResults) {
+      context += `**TASKS (${stats.tasks.length} total):**\n`;
+      stats.tasks.slice(0, 20).forEach((task, idx) => {
+        const status = task.completed ? '✅' : (task.due_on && new Date(task.due_on) < new Date() ? '⚠️ OVERDUE' : '⬜');
+        context += `${idx + 1}. ${status} ${task.name}`;
+        if (task.projectName) context += ` (${task.projectName})`;
+        if (task.assignee?.name) context += ` [${task.assignee.name}]`;
+        context += '\n';
+      });
+      if (stats.tasks.length > 20) {
+        context += `... and ${stats.tasks.length - 20} more tasks\n`;
+      }
+      context += '\n';
+    }
+
+    // RECENT COMMENTS (legacy format from standard stats)
+    if (stats.recentComments && stats.recentComments.length > 0 && !stats.conversations && !stats.targetTaskComments) {
       context += `**CONVERSATION HISTORY (Coach/Client Comments - Most Recent First):**\n`;
-      context += `The author name is shown before each comment - this tells you who said what (coach vs client).\n`;
-      context += `Use this to understand the ongoing dialogue and write relevant follow-ups:\n\n`;
-      recentComments.forEach((item, idx) => {
+      context += `The author name is shown before each comment - this tells you who said what (coach vs client).\n\n`;
+      stats.recentComments.forEach((item, idx) => {
         context += `--- TASK: "${item.taskName}" (${item.taskCompleted ? 'Completed' : 'Open'}) ---\n`;
         if (item.taskNotes) {
           context += `Task Description: ${item.taskNotes}\n`;
@@ -255,16 +473,13 @@ Remember: You're giving a coach a quick snapshot they can act on immediately. Sh
         context += '\n';
       });
       context += `---\n\n`;
-    } else {
-      context += `**CONVERSATION HISTORY:** No comments found.\n\n`;
     }
 
-    // Add meeting transcripts if found - now with author names
-    if (meetingTranscripts) {
-      if (meetingTranscripts.found && meetingTranscripts.transcripts.length > 0) {
+    // MEETING TRANSCRIPTS
+    if (stats.meetingTranscripts) {
+      if (stats.meetingTranscripts.found && stats.meetingTranscripts.transcripts.length > 0) {
         context += `**MEETING TRANSCRIPTS/NOTES FOUND:**\n`;
-        context += `(Use these to understand what was discussed in recent meetings - author names show who wrote what)\n\n`;
-        meetingTranscripts.transcripts.forEach((transcript, idx) => {
+        stats.meetingTranscripts.transcripts.forEach((transcript, idx) => {
           const date = new Date(transcript.taskDate).toLocaleDateString();
           context += `--- ${transcript.taskName} (${date}) ---\n`;
           context += `Project: ${transcript.projectName}\n`;
@@ -285,33 +500,37 @@ Remember: You're giving a coach a quick snapshot they can act on immediately. Sh
           context += '\n';
         });
         context += `---\n\n`;
-      } else {
-        context += `**MEETING TRANSCRIPTS:** No transcripts found in Meeting/1:1 projects.\n`;
-        context += `Projects searched: ${meetingTranscripts.projectsSearched?.join(', ') || 'None'}\n`;
-        context += `→ When writing a follow-up, ASK if the scheduled meeting happened and what was discussed.\n\n`;
       }
     }
 
-    if (recentCompletions && recentCompletions.length > 0) {
+    // RECENT COMPLETIONS
+    if (stats.recentCompletions && stats.recentCompletions.length > 0) {
       context += `**Recently Completed Tasks (last 7 days):**\n`;
-      recentCompletions.slice(0, 5).forEach((task, idx) => {
+      stats.recentCompletions.slice(0, 5).forEach((task, idx) => {
         context += `${idx + 1}. ${task.name}\n`;
       });
       context += '\n';
     }
 
-    if (openTasks && openTasks.length > 0) {
-      context += `**Open Tasks (${openTasks.length} remaining):**\n`;
-      openTasks.slice(0, 10).forEach((task, idx) => {
+    // OPEN TASKS (legacy format)
+    if (stats.openTasks && stats.openTasks.length > 0 && !stats.tasks) {
+      context += `**Open Tasks (${stats.openTasks.length} remaining):**\n`;
+      stats.openTasks.slice(0, 10).forEach((task, idx) => {
         const status = task.due_on ?
           (new Date(task.due_on) < new Date() ? '[OVERDUE]' : '[Pending]') :
           '[Pending]';
         context += `${idx + 1}. ${status} ${task.name}\n`;
       });
 
-      if (openTasks.length > 10) {
-        context += `... and ${openTasks.length - 10} more tasks\n`;
+      if (stats.openTasks.length > 10) {
+        context += `... and ${stats.openTasks.length - 10} more tasks\n`;
       }
+      context += '\n';
+    }
+
+    // If no data was added, note that
+    if (context === `**${clientName} - Data Retrieved**\n\n` || context.trim().endsWith('**Query Type:** ' + stats.intent)) {
+      context += `No specific data found for this query. The client exists but no matching data was retrieved.\n`;
     }
 
     return context;

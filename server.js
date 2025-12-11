@@ -341,14 +341,14 @@ app.post('/api/chat', async (req, res) => {
     const coachingGenerator = new CoachingResponseGenerator();
     const sheetsClient = new GoogleSheetsClient();
 
-    // Extract intent using OpenAI with conversation context
+    // Extract comprehensive intent using OpenAI with conversation context
     console.log('🤖 Extracting intent with context...');
     const intentResult = await intentExtractor.extractIntent(
       message,
       conversationHistory,
       currentClient
     );
-    console.log('📊 Intent result:', intentResult);
+    console.log('📊 Intent result:', JSON.stringify(intentResult, null, 2));
 
     if (!intentResult.success) {
       return res.json({
@@ -356,58 +356,367 @@ app.post('/api/chat', async (req, res) => {
       });
     }
 
-    const { clientName, intent, timeRange } = intentResult;
+    // Destructure all extracted fields
+    const {
+      clientNames,
+      clientName,
+      intent,
+      taskName,
+      projectName,
+      specificDate,
+      timeRange,
+      searchKeywords,
+      taskStatus,
+      assignee,
+      actionData
+    } = intentResult;
 
-    if (timeRange) {
-      console.log(`⏰ Time filter detected: ${timeRange}`);
-    }
+    console.log(`🎯 Intent: ${intent}`);
+    console.log(`👥 Clients: ${clientNames.join(', ')}`);
+    if (taskName) console.log(`📋 Task: ${taskName}`);
+    if (projectName) console.log(`📁 Project: ${projectName}`);
+    if (specificDate) console.log(`📅 Date: ${specificDate}`);
+    if (timeRange) console.log(`⏰ Time range: ${timeRange}`);
+    if (searchKeywords) console.log(`🔍 Keywords: ${searchKeywords.join(', ')}`);
+    if (taskStatus) console.log(`📊 Status filter: ${taskStatus}`);
+    if (assignee) console.log(`👤 Assignee filter: ${assignee}`);
 
-    if (clientName === 'unknown') {
+    if (clientNames.length === 1 && clientNames[0] === 'unknown') {
       return res.json({
         response: 'I couldn\'t identify which client or project you\'re asking about. Could you be more specific?'
       });
     }
 
-    // Get all teams (clients)
+    // Get all teams (clients) once
     console.log('📦 Fetching teams (clients)...');
     const teams = await asanaClient.getClientTeams();
     console.log(`✅ Found ${teams.length} teams`);
 
-    // Match client name to team
-    console.log('🔍 Matching client name:', clientName);
-    const match = await clientMatcher.findProject(clientName, teams);
+    // ============================================================
+    // MULTI-CLIENT SUPPORT - Process each client and aggregate results
+    // ============================================================
+    const multiClientResults = [];
+    let primaryClientName = null;
 
-    if (!match) {
-      const teamNames = teams.slice(0, 5).map(t => t.name).join(', ');
+    for (const clientNameToMatch of clientNames) {
+      console.log(`🔍 Matching client name: ${clientNameToMatch}`);
+      const match = await clientMatcher.findProject(clientNameToMatch, teams);
+
+      if (!match) {
+        console.log(`❌ No match found for "${clientNameToMatch}"`);
+        multiClientResults.push({
+          clientName: clientNameToMatch,
+          error: `Client "${clientNameToMatch}" not found`,
+          found: false
+        });
+        continue;
+      }
+
+      if (match.ambiguous) {
+        console.log(`⚠️ Ambiguous match for "${clientNameToMatch}"`);
+        multiClientResults.push({
+          clientName: clientNameToMatch,
+          error: `Multiple matches for "${clientNameToMatch}": ${match.matches.map(m => m.name).join(', ')}`,
+          found: false
+        });
+        continue;
+      }
+
+      // Successfully matched
+      const teamGid = match.gid;
+      const clientName_matched = match.name;
+      if (!primaryClientName) primaryClientName = clientName_matched;
+
+      console.log(`✅ Matched "${clientNameToMatch}" → "${clientName_matched}"`);
+
+      // Fetch data for this client based on intent
+      let clientStats = {
+        clientName: clientName_matched,
+        teamGid: teamGid,
+        found: true
+      };
+
+      // For multi-client queries, fetch conversations for each
+      if (clientNames.length > 1 || intent === 'get_conversation' || intent === 'compare') {
+        const conversations = await asanaClient.getAllConversations(teamGid, {
+          timeRange: timeRange,
+          limit: 10
+        });
+        clientStats.conversations = conversations;
+        clientStats.latestConversation = conversations[0] || null;
+      }
+
+      multiClientResults.push(clientStats);
+    }
+
+    // Use first successfully matched client as primary
+    const primaryClient = multiClientResults.find(r => r.found);
+    if (!primaryClient) {
+      const errors = multiClientResults.map(r => r.error).join('; ');
       return res.json({
-        response: `I couldn't find a client for "${clientName}". Here are some available clients: ${teamNames}...`
+        response: `I couldn't find any of the clients you mentioned. ${errors}`
       });
     }
 
-    if (match.ambiguous) {
-      const msg = formatter.formatAmbiguous(match.matches);
-      return res.json({
-        response: msg
+    const teamGid = primaryClient.teamGid;
+    const clientName_matched = primaryClient.clientName;
+
+    // Initialize stats object that will be passed to response generator
+    let stats = {
+      intent: intent,
+      clientName: clientName_matched,
+      teamGid: teamGid,
+      // Include multi-client results if more than one client
+      multiClientResults: clientNames.length > 1 ? multiClientResults : null,
+      isMultiClient: clientNames.length > 1,
+    };
+
+    // ============================================================
+    // INTENT-BASED ROUTING - Different data retrieval per intent
+    // ============================================================
+
+    if (intent === 'list_projects') {
+      // List all projects for this client
+      console.log('📁 Listing all projects...');
+      const projects = await asanaClient.getAllTeamProjects(teamGid);
+      stats.allProjects = projects;
+      stats.projectCount = projects.length;
+
+    } else if (intent === 'get_project') {
+      // Get specific project by name
+      console.log(`📁 Finding project "${projectName}"...`);
+      const project = await asanaClient.findProjectByName(teamGid, projectName);
+      if (project) {
+        stats.targetProject = project;
+        stats.tasks = await asanaClient.getProjectTasksPaginated(project.gid, {
+          taskStatus,
+          assignee,
+          limit: 50
+        });
+        stats.totalTasks = stats.tasks.length;
+        stats.completedTasks = stats.tasks.filter(t => t.completed).length;
+        // Get recent comments from this project
+        stats.recentComments = await asanaClient.getRecentComments(stats.tasks.slice(0, 15));
+      } else {
+        stats.projectNotFound = projectName;
+        // Still get list of available projects
+        stats.allProjects = await asanaClient.getAllTeamProjects(teamGid);
+      }
+
+    } else if (intent === 'get_task') {
+      // Get specific task by name
+      console.log(`📋 Finding task "${taskName}"...`);
+      const task = await asanaClient.findTaskByName(teamGid, taskName, null);
+      if (task) {
+        stats.targetTask = task;
+        // Get task comments
+        const stories = await asanaClient.getTaskStories(task.gid);
+        stats.targetTaskComments = stories
+          .filter(s => s.type === 'comment' && s.text)
+          .map(c => ({
+            text: c.text,
+            date: c.created_at,
+            author: c.created_by?.name || 'Unknown'
+          }));
+        // Get attachments
+        stats.targetTaskAttachments = await asanaClient.getTaskAttachments(task.gid);
+        // Get subtasks
+        stats.targetTaskSubtasks = await asanaClient.getSubtasks(task.gid);
+      } else {
+        stats.taskNotFound = taskName;
+      }
+
+    } else if (intent === 'get_comment') {
+      // Get specific comment(s), possibly filtered by date
+      console.log(`💬 Finding comments...`);
+      if (taskName) {
+        // Find task first, then get its comments
+        const task = await asanaClient.findTaskByName(teamGid, taskName, null);
+        if (task) {
+          stats.targetTask = task;
+          const stories = await asanaClient.getTaskStories(task.gid);
+          let comments = stories
+            .filter(s => s.type === 'comment' && s.text)
+            .map(c => ({
+              text: c.text,
+              date: c.created_at,
+              author: c.created_by?.name || 'Unknown'
+            }));
+
+          // Filter by date if specified
+          if (specificDate) {
+            const targetDate = new Date(specificDate);
+            comments = comments.filter(c => {
+              const commentDate = new Date(c.date);
+              return (
+                commentDate.getFullYear() === targetDate.getFullYear() &&
+                commentDate.getMonth() === targetDate.getMonth() &&
+                commentDate.getDate() === targetDate.getDate()
+              );
+            });
+          }
+          stats.targetTaskComments = comments;
+        } else {
+          stats.taskNotFound = taskName;
+        }
+      } else if (specificDate) {
+        // Search comments by date across all projects
+        stats.targetComments = await asanaClient.searchCommentsByDate(teamGid, specificDate);
+      }
+
+    } else if (intent === 'get_conversation') {
+      // Get all recent conversations/comments
+      console.log('💬 Fetching all conversations...');
+      stats.conversations = await asanaClient.getAllConversations(teamGid, {
+        projectGid: projectName ? (await asanaClient.findProjectByName(teamGid, projectName))?.gid : null,
+        timeRange: timeRange,
+        limit: 30
       });
+
+    } else if (intent === 'search_tasks') {
+      // Search tasks by keywords
+      console.log(`🔍 Searching tasks for keywords...`);
+      if (searchKeywords && searchKeywords.length > 0) {
+        stats.searchResults = await asanaClient.searchTasksByKeywords(teamGid, searchKeywords, {
+          taskStatus,
+          assignee,
+          limit: 20
+        });
+      }
+
+    } else if (intent === 'list_tasks') {
+      // List tasks with filters
+      console.log(`📋 Listing tasks...`);
+      let targetProjectGid = null;
+      if (projectName) {
+        const project = await asanaClient.findProjectByName(teamGid, projectName);
+        if (project) {
+          targetProjectGid = project.gid;
+          stats.targetProject = project;
+        }
+      }
+
+      if (targetProjectGid) {
+        stats.tasks = await asanaClient.getProjectTasksPaginated(targetProjectGid, {
+          taskStatus,
+          assignee,
+          limit: 100
+        });
+      } else {
+        // Search across all projects
+        const allProjects = await asanaClient.getAllTeamProjects(teamGid);
+        let allTasks = [];
+        for (const project of allProjects.slice(0, 5)) {
+          const tasks = await asanaClient.getProjectTasksPaginated(project.gid, {
+            taskStatus,
+            assignee,
+            limit: 30
+          });
+          allTasks = allTasks.concat(tasks.map(t => ({ ...t, projectName: project.name })));
+        }
+        stats.tasks = allTasks;
+      }
+
+      stats.totalTasks = stats.tasks?.length || 0;
+      stats.completedTasks = stats.tasks?.filter(t => t.completed).length || 0;
+      stats.overdueTasks = stats.tasks?.filter(t => !t.completed && t.due_on && new Date(t.due_on) < new Date()).length || 0;
+
+    } else if (intent === 'create_task' && actionData) {
+      // Create a new task
+      console.log('➕ Creating task...');
+      const progressProject = await asanaClient.getTeamProgressProject(teamGid);
+      if (progressProject && actionData.name) {
+        const newTask = await asanaClient.createTask(progressProject.gid, actionData);
+        stats.createdTask = newTask;
+        stats.actionSuccess = true;
+      } else {
+        stats.actionError = 'Could not create task - missing project or task name';
+      }
+
+    } else if (intent === 'add_comment' && actionData) {
+      // Add a comment to a task
+      console.log('💬 Adding comment...');
+      if (taskName) {
+        const task = await asanaClient.findTaskByName(teamGid, taskName, null);
+        if (task && actionData.text) {
+          const comment = await asanaClient.addComment(task.gid, actionData.text);
+          stats.addedComment = comment;
+          stats.actionSuccess = true;
+          stats.targetTask = task;
+        } else {
+          stats.actionError = task ? 'Missing comment text' : `Task "${taskName}" not found`;
+        }
+      } else {
+        stats.actionError = 'Please specify which task to add the comment to';
+      }
+
+    } else if (intent === 'update_task' && actionData) {
+      // Update a task
+      console.log('✏️ Updating task...');
+      if (taskName) {
+        const task = await asanaClient.findTaskByName(teamGid, taskName, null);
+        if (task) {
+          const updatedTask = await asanaClient.updateTask(task.gid, actionData);
+          stats.updatedTask = updatedTask;
+          stats.actionSuccess = true;
+        } else {
+          stats.actionError = `Task "${taskName}" not found`;
+        }
+      } else {
+        stats.actionError = 'Please specify which task to update';
+      }
+
+    } else if (intent === 'get_attachments') {
+      // Get attachments from a task
+      console.log('📎 Fetching attachments...');
+      if (taskName) {
+        const task = await asanaClient.findTaskByName(teamGid, taskName, null);
+        if (task) {
+          stats.targetTask = task;
+          stats.attachments = await asanaClient.getTaskAttachments(task.gid);
+        } else {
+          stats.taskNotFound = taskName;
+        }
+      }
+
+    } else {
+      // Default: status - comprehensive data retrieval
+      console.log('📊 Fetching comprehensive status data...');
+
+      // Use new comprehensive method if specific task/project/date is requested
+      if (taskName || projectName || specificDate || searchKeywords) {
+        const comprehensiveData = await asanaClient.getComprehensiveClientData(teamGid, {
+          projectName,
+          taskName,
+          specificDate,
+          timeRange,
+          searchKeywords,
+          taskStatus,
+          assignee
+        });
+
+        stats = { ...stats, ...comprehensiveData };
+      } else {
+        // Standard status check - Progress project only
+        const progressProject = await asanaClient.getTeamProgressProject(teamGid);
+
+        if (!progressProject) {
+          return res.json({
+            response: `I found the client "${clientName_matched}", but they don't have a Progress project yet.`
+          });
+        }
+
+        const projectId = progressProject.gid;
+        const projectStats = await asanaClient.getProjectStats(projectId, timeRange);
+        stats = { ...stats, ...projectStats };
+
+        // Search for meetings
+        const meetingTranscripts = await asanaClient.getMeetingTranscripts(teamGid, null, projectId);
+        if (meetingTranscripts.found) {
+          stats.meetingTranscripts = meetingTranscripts;
+        }
+      }
     }
-
-    // Get the "Progress" project for this team
-    console.log('📊 Fetching Progress project for team...');
-    const teamGid = match.gid;
-    const clientName_matched = match.name;
-    const progressProject = await asanaClient.getTeamProgressProject(teamGid);
-
-    if (!progressProject) {
-      return res.json({
-        response: `I found the client "${clientName_matched}", but they don't have a Progress project yet.`
-      });
-    }
-
-    // Fetch project stats with time filter
-    console.log('📊 Fetching project stats...');
-    const projectId = progressProject.gid;
-    const projectName = clientName_matched; // Use team name as client name
-    const stats = await asanaClient.getProjectStats(projectId, timeRange);
 
     // Try to fetch P&L data from Google Sheets (if available)
     console.log('💰 Checking for P&L data in Google Sheets...');
@@ -423,22 +732,11 @@ app.post('/api/chat', async (req, res) => {
       console.log('⚠️  Could not fetch P&L data:', err.message);
     }
 
-    // Always search for meetings in the "1-1 Meetings" section of Progress project
-    // This is where meeting notes/summaries are stored
-    console.log('📝 Searching for meeting transcripts in Progress project sections...');
-    const meetingTranscripts = await asanaClient.getMeetingTranscripts(teamGid, null, projectId);
-    if (meetingTranscripts.found) {
-      stats.meetingTranscripts = meetingTranscripts;
-      console.log(`✅ Found ${meetingTranscripts.transcripts.length} meeting records`);
-    } else {
-      console.log('ℹ️  No meeting transcripts found');
-    }
-
     // Generate conversational coaching response
     console.log('🎯 Generating coaching response...');
     const responseText = await coachingGenerator.generateResponse(
-      message, // The actual question the user asked
-      projectName,
+      message,
+      clientName_matched,
       stats,
       conversationHistory
     );
@@ -446,19 +744,19 @@ app.post('/api/chat', async (req, res) => {
 
     // Save conversation to Supabase or in-memory
     if (supabase.isConnected()) {
-      await supabase.saveConversationTurn(sid, message, responseText, projectName);
+      await supabase.saveConversationTurn(sid, message, responseText, clientName_matched);
       console.log('💾 Conversation saved to Supabase');
     } else {
       session.conversationHistory.push(
         { role: 'user', content: message },
         { role: 'assistant', content: responseText }
       );
-      session.currentClient = projectName;
+      session.currentClient = clientName_matched;
       console.log('💾 Conversation saved to memory');
     }
 
     console.log('💾 Session updated:', {
-      currentClient: projectName,
+      currentClient: clientName_matched,
       storage: supabase.isConnected() ? 'Supabase' : 'In-Memory'
     });
 
