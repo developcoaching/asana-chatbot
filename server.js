@@ -125,12 +125,11 @@ app.post('/api/coach/login', async (req, res) => {
 
 // Get list of available coaches (for dropdown)
 app.get('/api/coaches', (req, res) => {
-  // Hardcoded list of coaches - can be moved to env/config later
   const coaches = [
     { name: 'Greg', role: 'Lead Coach' },
-    { name: 'Jamie', role: 'Coach' },
-    { name: 'Sarah', role: 'Coach' },
-    { name: 'Mike', role: 'Coach' }
+    { name: 'Jamie Mills', role: 'Coach' },
+    { name: 'Nick Tobing', role: 'Coach' },
+    { name: 'Harmeet Johal', role: 'Coach' }
   ];
   res.json({ coaches });
 });
@@ -334,17 +333,48 @@ app.post('/api/chat', async (req, res) => {
     const ClientMatcher = require('./src/client-matcher');
     const CoachingResponseGenerator = require('./src/coaching-response-generator');
     const GoogleSheetsClient = require('./src/google-sheets-client');
+    const LanguagePreprocessor = require('./src/language-preprocessor');
+    const DateNormalizer = require('./src/date-normalizer');
 
     const asanaClient = new AsanaClient();
     const intentExtractor = new OpenAIIntentExtractor();
     const clientMatcher = new ClientMatcher();
     const coachingGenerator = new CoachingResponseGenerator();
     const sheetsClient = new GoogleSheetsClient();
+    const preprocessor = new LanguagePreprocessor();
+    const dateNormalizer = new DateNormalizer();
+
+    // PHASE 1: Pre-process the message BEFORE intent extraction
+    // This is deterministic - no AI, just string cleanup
+    const cleanedMessage = preprocessor.process(message);
+    console.log('🧹 Pre-processed message:', cleanedMessage);
+    if (cleanedMessage !== message.toLowerCase().trim()) {
+      console.log('   Original:', message);
+      console.log('   Cleaned:', cleanedMessage);
+    }
+
+    // PHASE 3: Date normalization - parse dates BEFORE GPT
+    const dateResult = dateNormalizer.normalizeInText(cleanedMessage);
+    let normalizedDate = null;
+    let dateRange = null;
+    if (dateResult.dateInfo) {
+      console.log('📅 Date detected:', JSON.stringify(dateResult.dateInfo));
+      if (dateResult.dateInfo.type === 'single') {
+        normalizedDate = dateResult.dateInfo.date;
+      } else if (dateResult.dateInfo.type === 'range') {
+        dateRange = {
+          start: dateResult.dateInfo.start,
+          end: dateResult.dateInfo.end,
+          label: dateResult.dateInfo.label
+        };
+      }
+    }
 
     // Extract comprehensive intent using OpenAI with conversation context
+    // GPT now receives CLEAN input - no typos, normalized terminology
     console.log('🤖 Extracting intent with context...');
     const intentResult = await intentExtractor.extractIntent(
-      message,
+      cleanedMessage,  // Use cleaned message, not raw
       conversationHistory,
       currentClient
     );
@@ -357,12 +387,13 @@ app.post('/api/chat', async (req, res) => {
     }
 
     // Destructure all extracted fields
-    const {
+    let {
       clientNames,
       clientName,
       intent,
       taskName,
       projectName,
+      sectionName,
       specificDate,
       timeRange,
       searchKeywords,
@@ -371,10 +402,25 @@ app.post('/api/chat', async (req, res) => {
       actionData
     } = intentResult;
 
+    // OVERRIDE GPT's date parsing with our deterministic date normalization
+    // Our date normalizer runs BEFORE GPT and is more reliable
+    if (normalizedDate) {
+      specificDate = normalizedDate;
+      console.log(`📅 Using deterministic date: ${specificDate}`);
+    }
+    if (dateRange) {
+      // Convert date range to timeRange label for existing code
+      timeRange = dateRange.label;
+      // Also store the actual range for filtering
+      intentResult.dateRange = dateRange;
+      console.log(`📅 Using deterministic date range: ${dateRange.start} to ${dateRange.end}`);
+    }
+
     console.log(`🎯 Intent: ${intent}`);
     console.log(`👥 Clients: ${clientNames.join(', ')}`);
     if (taskName) console.log(`📋 Task: ${taskName}`);
     if (projectName) console.log(`📁 Project: ${projectName}`);
+    if (sectionName) console.log(`📑 Section: ${sectionName}`);
     if (specificDate) console.log(`📅 Date: ${specificDate}`);
     if (timeRange) console.log(`⏰ Time range: ${timeRange}`);
     if (searchKeywords) console.log(`🔍 Keywords: ${searchKeywords.join(', ')}`);
@@ -402,7 +448,70 @@ app.post('/api/chat', async (req, res) => {
       console.log(`🔍 Matching client name: ${clientNameToMatch}`);
       const match = await clientMatcher.findProject(clientNameToMatch, teams);
 
-      if (!match) {
+      // Handle new client-matcher response formats
+      // Case 1: Direct match (has gid property) - high confidence auto-selected
+      if (match && match.gid) {
+        // Successfully matched - proceed below
+      }
+      // Case 2: Not found with suggestions
+      else if (match && match.notFound) {
+        console.log(`❌ No match found for "${clientNameToMatch}"`);
+        const suggestionText = match.suggestions && match.suggestions.length > 0
+          ? `\n\nDid you mean one of these?\n• ${match.suggestions.map(s => s.name).join('\n• ')}`
+          : '';
+        multiClientResults.push({
+          clientName: clientNameToMatch,
+          error: `I couldn't find a client matching "${clientNameToMatch}".${suggestionText}`,
+          found: false,
+          suggestions: match.suggestions
+        });
+        continue;
+      }
+      // Case 3: Low confidence with suggestions
+      else if (match && match.lowConfidence) {
+        console.log(`❓ Low confidence match for "${clientNameToMatch}" - best guess: ${match.bestGuess.name}`);
+        // Use best guess but note the uncertainty
+        const teamGid = match.bestGuess.gid;
+        const clientName_matched = match.bestGuess.name;
+        if (!primaryClientName) primaryClientName = clientName_matched;
+
+        console.log(`✅ Using best guess: "${clientNameToMatch}" → "${clientName_matched}" (score: ${match.bestGuessScore.toFixed(2)})`);
+
+        let clientStats = {
+          clientName: clientName_matched,
+          teamGid: teamGid,
+          found: true,
+          lowConfidence: true,
+          suggestions: match.suggestions
+        };
+
+        if (clientNames.length > 1 || intent === 'get_conversation' || intent === 'compare') {
+          const conversations = await asanaClient.getAllConversations(teamGid, {
+            timeRange: timeRange,
+            limit: 10
+          });
+          clientStats.conversations = conversations;
+          clientStats.latestConversation = conversations[0] || null;
+        }
+
+        multiClientResults.push(clientStats);
+        continue;
+      }
+      // Case 4: Ambiguous - multiple equally good matches
+      else if (match && match.ambiguous) {
+        console.log(`⚠️ Ambiguous match for "${clientNameToMatch}"`);
+        const matchNames = match.suggestions.map(s => s.name).join('\n• ');
+        multiClientResults.push({
+          clientName: clientNameToMatch,
+          error: `I found multiple possible matches for "${clientNameToMatch}":\n• ${matchNames}\n\nWhich one did you mean?`,
+          found: false,
+          ambiguous: true,
+          suggestions: match.suggestions
+        });
+        continue;
+      }
+      // Case 5: No match at all
+      else if (!match) {
         console.log(`❌ No match found for "${clientNameToMatch}"`);
         multiClientResults.push({
           clientName: clientNameToMatch,
@@ -412,17 +521,7 @@ app.post('/api/chat', async (req, res) => {
         continue;
       }
 
-      if (match.ambiguous) {
-        console.log(`⚠️ Ambiguous match for "${clientNameToMatch}"`);
-        multiClientResults.push({
-          clientName: clientNameToMatch,
-          error: `Multiple matches for "${clientNameToMatch}": ${match.matches.map(m => m.name).join(', ')}`,
-          found: false
-        });
-        continue;
-      }
-
-      // Successfully matched
+      // Successfully matched (high confidence)
       const teamGid = match.gid;
       const clientName_matched = match.name;
       if (!primaryClientName) primaryClientName = clientName_matched;
@@ -501,6 +600,83 @@ app.post('/api/chat', async (req, res) => {
         stats.projectNotFound = projectName;
         // Still get list of available projects
         stats.allProjects = await asanaClient.getAllTeamProjects(teamGid);
+      }
+
+    } else if (intent === 'get_section') {
+      // Get tasks and conversations from a specific board section
+      console.log(`📑 Getting section "${sectionName}"...`);
+      const progressProject = await asanaClient.getTeamProgressProject(teamGid);
+      if (progressProject) {
+        const sectionData = await asanaClient.getSectionByName(progressProject.gid, sectionName);
+        if (sectionData.found) {
+          let filteredTasks = sectionData.tasks;
+
+          // Filter by specific task name if provided
+          if (taskName) {
+            console.log(`📋 Filtering section for task "${taskName}"...`);
+            const taskNameLower = taskName.toLowerCase();
+            filteredTasks = filteredTasks.filter(t =>
+              t.name.toLowerCase().includes(taskNameLower) ||
+              taskNameLower.includes(t.name.toLowerCase())
+            );
+          }
+
+          // Filter comments by specific date if provided
+          if (specificDate) {
+            console.log(`📅 Filtering comments for date ${specificDate}...`);
+            const targetDate = new Date(specificDate);
+            filteredTasks = filteredTasks.map(task => ({
+              ...task,
+              comments: task.comments.filter(c => {
+                const commentDate = new Date(c.date);
+                return (
+                  commentDate.getFullYear() === targetDate.getFullYear() &&
+                  commentDate.getMonth() === targetDate.getMonth() &&
+                  commentDate.getDate() === targetDate.getDate()
+                );
+              }),
+              commentCount: undefined // Will be recalculated
+            })).map(task => ({
+              ...task,
+              commentCount: task.comments.length
+            }));
+            // Remove tasks with no comments after date filter
+            filteredTasks = filteredTasks.filter(t => t.commentCount > 0);
+          }
+
+          stats.targetSection = { ...sectionData, tasks: filteredTasks };
+          stats.sectionName = sectionData.sectionName;
+          stats.sectionTasks = filteredTasks;
+          stats.sectionTaskCount = filteredTasks.length;
+          stats.sectionTotalComments = filteredTasks.reduce((sum, t) => sum + t.commentCount, 0);
+
+          // If filtering resulted in no results, note that
+          if (filteredTasks.length === 0) {
+            if (taskName && specificDate) {
+              stats.noResultsMessage = `No comments found for task "${taskName}" on ${specificDate} in section "${sectionData.sectionName}"`;
+            } else if (taskName) {
+              stats.noResultsMessage = `Task "${taskName}" not found in section "${sectionData.sectionName}"`;
+            } else if (specificDate) {
+              stats.noResultsMessage = `No comments found on ${specificDate} in section "${sectionData.sectionName}"`;
+            }
+          }
+        } else {
+          stats.sectionNotFound = sectionName;
+          stats.availableSections = sectionData.availableSections;
+        }
+      } else {
+        stats.noProgressProject = true;
+      }
+
+    } else if (intent === 'get_board') {
+      // Get full board structure with all sections
+      console.log(`📊 Getting full board structure...`);
+      const progressProject = await asanaClient.getTeamProgressProject(teamGid);
+      if (progressProject) {
+        stats.targetProject = progressProject;
+        stats.boardStructure = await asanaClient.getBoardStructure(progressProject.gid);
+      } else {
+        stats.noProgressProject = true;
       }
 
     } else if (intent === 'get_task') {

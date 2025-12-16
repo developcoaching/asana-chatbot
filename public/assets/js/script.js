@@ -702,9 +702,9 @@ async function loadCoachesList() {
             coachSelect.innerHTML = `
                 <option value="">Select your name...</option>
                 <option value="Greg">Greg (Lead Coach)</option>
-                <option value="Jamie">Jamie (Coach)</option>
-                <option value="Sarah">Sarah (Coach)</option>
-                <option value="Mike">Mike (Coach)</option>
+                <option value="Jamie Mills">Jamie Mills (Coach)</option>
+                <option value="Nick Tobing">Nick Tobing (Coach)</option>
+                <option value="Harmeet Johal">Harmeet Johal (Coach)</option>
             `;
         }
     }

@@ -71,6 +71,8 @@ class OpenAIIntentExtractor {
    - "list_tasks" - List tasks (completed, open, overdue, etc.)
    - "list_projects" - Show all projects for a client
    - "get_project" - Access a specific project by name
+   - "get_section" - Get tasks/conversations from a board section (PLAN, ATTRACT, CONVERT, DELIVER, SCALE)
+   - "get_board" - Show full board structure with all sections
    - "compare" - Compare multiple clients
    - "write_message" - Draft a message to client
    - "create_task" - Create a new task
@@ -127,7 +129,28 @@ class OpenAIIntentExtractor {
     - For update_task: { "completed": true } or other fields
     - null if not a write operation
 
+11. **sectionName** - Board section being referenced:
+    - "PLAN", "ATTRACT", "CONVERT", "DELIVER", "SCALE"
+    - "Right next thing" - Priority/next action tasks
+    - "Meetings", "1-1 Meetings" - Meeting-related tasks
+    - "Build & Scale Summit 2025", "Build & Scale Summmit 2025" - Summit tasks
+    - "Boardroom" - Boardroom-related tasks
+    - These are columns on the Progress board
+    - IMPORTANT: Return the section name EXACTLY as user says it (e.g., "Right next thing" not "PLAN")
+    - null if not mentioned
+
 **TODAY'S DATE:** ${new Date().toISOString().split('T')[0]}
+
+**BOARD SECTIONS:** The Progress project is organized as a board with these sections:
+- PLAN: Planning tasks (MAPs, P&L Tracker, Roadmap, etc.)
+- ATTRACT: Marketing/lead generation tasks
+- CONVERT: Sales tasks (Sales mastery, Website, Estimates)
+- DELIVER: Delivery/operations tasks (Software, Change orders)
+- SCALE: Scaling/growth tasks
+- Right next thing: Priority items, next actions, immediate tasks
+- Meetings / 1-1 Meetings: Meeting notes and follow-ups
+- Build & Scale Summit 2025: Summit-related tasks
+- Boardroom: Boardroom tasks
 
 **EXAMPLES:**
 
@@ -263,11 +286,102 @@ Query: "Show tasks assigned to Jamie in Brad's project"
   "intent": "list_tasks",
   "taskName": null,
   "projectName": null,
+  "sectionName": null,
   "specificDate": null,
   "timeRange": null,
   "searchKeywords": null,
   "taskStatus": null,
   "assignee": "Jamie",
+  "actionData": null
+}
+
+Query: "What's happening in John's PLAN section?"
+→ {
+  "clientNames": ["John"],
+  "intent": "get_section",
+  "taskName": null,
+  "projectName": null,
+  "sectionName": "PLAN",
+  "specificDate": null,
+  "timeRange": null,
+  "searchKeywords": null,
+  "taskStatus": null,
+  "assignee": null,
+  "actionData": null
+}
+
+Query: "Show me Rachel's board"
+→ {
+  "clientNames": ["Rachel"],
+  "intent": "get_board",
+  "taskName": null,
+  "projectName": null,
+  "sectionName": null,
+  "specificDate": null,
+  "timeRange": null,
+  "searchKeywords": null,
+  "taskStatus": null,
+  "assignee": null,
+  "actionData": null
+}
+
+Query: "What conversations are in the CONVERT section for Brad?"
+→ {
+  "clientNames": ["Brad"],
+  "intent": "get_section",
+  "taskName": null,
+  "projectName": null,
+  "sectionName": "CONVERT",
+  "specificDate": null,
+  "timeRange": null,
+  "searchKeywords": null,
+  "taskStatus": null,
+  "assignee": null,
+  "actionData": null
+}
+
+Query: "Show me what's in DELIVER for John Eastwood"
+→ {
+  "clientNames": ["John Eastwood"],
+  "intent": "get_section",
+  "taskName": null,
+  "projectName": null,
+  "sectionName": "DELIVER",
+  "specificDate": null,
+  "timeRange": null,
+  "searchKeywords": null,
+  "taskStatus": null,
+  "assignee": null,
+  "actionData": null
+}
+
+Query: "Check alexandra's right next thing section"
+→ {
+  "clientNames": ["Alexandra"],
+  "intent": "get_section",
+  "taskName": null,
+  "projectName": null,
+  "sectionName": "Right next thing",
+  "specificDate": null,
+  "timeRange": null,
+  "searchKeywords": null,
+  "taskStatus": null,
+  "assignee": null,
+  "actionData": null
+}
+
+Query: "What tasks are in the Right next thing for Brad?"
+→ {
+  "clientNames": ["Brad"],
+  "intent": "get_section",
+  "taskName": null,
+  "projectName": null,
+  "sectionName": "Right next thing",
+  "specificDate": null,
+  "timeRange": null,
+  "searchKeywords": null,
+  "taskStatus": null,
+  "assignee": null,
   "actionData": null
 }`;
 
@@ -281,7 +395,16 @@ Query: "Show tasks assigned to Jamie in Brad's project"
 - If user says "he", "his", "him", "she", "her", "them", "their" → use ["${currentClient}"]
 - If user says "the client", "the project", "this one" → use ["${currentClient}"]
 - If user mentions ANY new name(s) → use those new names as array
-- If user says "that task" or "the task" → use previous task context if available`;
+- If user says "that task" or "the task" → use previous task context if available
+
+**FOLLOW-UP QUESTION DETECTION:**
+When user asks follow-up questions about previous results, interpret them correctly:
+- "which task is that from?" → intent: "get_conversation" (re-fetch with context)
+- "what other comments are there?" → intent: "get_conversation" (same client, get all)
+- "show me more" → intent: "get_conversation" (same client, expand results)
+- "what section is it in?" → intent: "get_board" (get board structure)
+- "tell me more about that task" → intent: "get_task" with taskName from context
+- "what's the full thread?" → intent: "get_conversation" (get all comments)`;
       }
 
       systemPrompt += `
@@ -293,6 +416,7 @@ Query: "Show tasks assigned to Jamie in Brad's project"
   "intent": "string",
   "taskName": "string or null",
   "projectName": "string or null",
+  "sectionName": "string or null",
   "specificDate": "YYYY-MM-DD or null",
   "timeRange": "string or null",
   "searchKeywords": ["array"] or null,
@@ -326,7 +450,7 @@ Query: "Show tasks assigned to Jamie in Brad's project"
       });
 
       const response = await this.client.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: 'gpt-4o',
         messages,
         temperature: 0.1, // Low temperature for consistent extraction
       });
@@ -360,6 +484,7 @@ Query: "Show tasks assigned to Jamie in Brad's project"
         intent: extracted.intent || 'status',
         taskName: extracted.taskName || null,
         projectName: extracted.projectName || null,
+        sectionName: extracted.sectionName || null,
         specificDate: extracted.specificDate || null,
         timeRange: extracted.timeRange || null,
         searchKeywords: extracted.searchKeywords || null,
@@ -376,6 +501,7 @@ Query: "Show tasks assigned to Jamie in Brad's project"
         intent: 'status',
         taskName: null,
         projectName: null,
+        sectionName: null,
         specificDate: null,
         timeRange: null,
         searchKeywords: null,

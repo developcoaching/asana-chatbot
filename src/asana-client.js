@@ -357,6 +357,117 @@ class AsanaClient {
   }
 
   /**
+   * Get board structure with sections and tasks (with comment counts)
+   * This is the key method for understanding the Progress board layout
+   */
+  async getBoardStructure(projectGid) {
+    console.log(`📊 Fetching board structure for project ${projectGid}...`);
+    try {
+      const sections = await this.getProjectSections(projectGid);
+      const boardStructure = [];
+
+      for (const section of sections) {
+        const tasks = await this.getSectionTasks(section.gid);
+
+        // Get comment counts for each task
+        const tasksWithComments = await Promise.all(
+          tasks.map(async (task) => {
+            try {
+              const stories = await this.getTaskStories(task.gid);
+              const comments = stories.filter(s => s.type === 'comment' && s.text);
+              return {
+                ...task,
+                commentCount: comments.length,
+                latestComment: comments.length > 0 ? {
+                  text: comments[0].text,
+                  author: comments[0].created_by?.name || 'Unknown',
+                  date: comments[0].created_at
+                } : null
+              };
+            } catch (err) {
+              return { ...task, commentCount: 0, latestComment: null };
+            }
+          })
+        );
+
+        boardStructure.push({
+          sectionName: section.name,
+          sectionGid: section.gid,
+          taskCount: tasksWithComments.length,
+          tasks: tasksWithComments
+        });
+      }
+
+      console.log(`✅ Board has ${sections.length} sections with ${boardStructure.reduce((sum, s) => sum + s.taskCount, 0)} total tasks`);
+      return boardStructure;
+    } catch (error) {
+      console.error('Error fetching board structure:', error.message);
+      return [];
+    }
+  }
+
+  /**
+   * Get tasks and conversations from a specific section by name
+   */
+  async getSectionByName(projectGid, sectionName) {
+    console.log(`🔍 Finding section "${sectionName}" in project ${projectGid}...`);
+    try {
+      const sections = await this.getProjectSections(projectGid);
+
+      // Find section by name (case insensitive, partial match)
+      const section = sections.find(s =>
+        s.name.toLowerCase().includes(sectionName.toLowerCase()) ||
+        sectionName.toLowerCase().includes(s.name.toLowerCase())
+      );
+
+      if (!section) {
+        console.log(`❌ Section "${sectionName}" not found. Available: ${sections.map(s => s.name).join(', ')}`);
+        return { found: false, availableSections: sections.map(s => s.name) };
+      }
+
+      console.log(`✅ Found section: "${section.name}"`);
+      const tasks = await this.getSectionTasks(section.gid);
+
+      // Get full details with comments for each task
+      const tasksWithDetails = await Promise.all(
+        tasks.map(async (task) => {
+          try {
+            const stories = await this.getTaskStories(task.gid);
+            const comments = stories
+              .filter(s => s.type === 'comment' && s.text)
+              .map(c => ({
+                text: c.text,
+                author: c.created_by?.name || 'Unknown',
+                date: c.created_at
+              }))
+              // Sort by date, newest first
+              .sort((a, b) => new Date(b.date) - new Date(a.date));
+            return {
+              ...task,
+              comments,
+              commentCount: comments.length
+            };
+          } catch (err) {
+            return { ...task, comments: [], commentCount: 0 };
+          }
+        })
+      );
+
+      return {
+        found: true,
+        sectionName: section.name,
+        sectionGid: section.gid,
+        tasks: tasksWithDetails,
+        taskCount: tasksWithDetails.length,
+        totalComments: tasksWithDetails.reduce((sum, t) => sum + t.commentCount, 0)
+      };
+    } catch (error) {
+      console.error('Error finding section:', error.message);
+      return { found: false, error: error.message };
+    }
+  }
+
+  /**
    * Search for meeting transcripts - now searches SECTIONS within Progress project first
    * Meetings are stored in sections named "1-1 Meetings", "Meetings", etc.
    */
@@ -866,12 +977,14 @@ class AsanaClient {
   /**
    * Get all comments from all tasks across all projects for a client
    * Sorted by date (most recent first)
+   * ENHANCED: Now includes section info and all related comments on each task
    */
   async getAllConversations(teamGid, options = {}) {
     console.log(`💬 Fetching ALL conversations for team ${teamGid}...`);
 
-    const { projectGid, limit = 30, timeRange } = options;
+    const { projectGid, limit = 30, timeRange, includeFullTaskContext = true } = options;
     const allComments = [];
+    const taskContextCache = new Map(); // Cache task context to avoid duplicate fetches
 
     let projectsToSearch = [];
     if (projectGid) {
@@ -886,6 +999,23 @@ class AsanaClient {
       cutoffDate = this.calculateCutoffDate(timeRange);
     }
 
+    // First, get the board structure for the Progress project to know section mappings
+    let sectionMap = new Map();
+    const progressProject = await this.getTeamProgressProject(teamGid);
+    if (progressProject) {
+      try {
+        const sections = await this.getProjectSections(progressProject.gid);
+        for (const section of sections) {
+          const sectionTasks = await this.getSectionTasks(section.gid);
+          for (const task of sectionTasks) {
+            sectionMap.set(task.gid, section.name);
+          }
+        }
+      } catch (err) {
+        console.log('⚠️ Could not build section map:', err.message);
+      }
+    }
+
     for (const project of projectsToSearch.slice(0, 8)) { // Limit to 8 projects
       try {
         const tasks = await this.getProjectTasks(project.gid);
@@ -894,8 +1024,22 @@ class AsanaClient {
           const stories = await this.getTaskStories(task.gid);
           const comments = stories.filter(s => s.type === 'comment' && s.text);
 
-          for (const comment of comments) {
-            const commentDate = new Date(comment.created_at);
+          if (comments.length === 0) continue;
+
+          // Sort all comments for this task by date (newest first)
+          const sortedComments = comments
+            .map(c => ({
+              text: c.text,
+              date: c.created_at,
+              author: c.created_by?.name || 'Unknown',
+            }))
+            .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+          // Get the section this task is in
+          const sectionName = sectionMap.get(task.gid) || null;
+
+          for (const comment of sortedComments) {
+            const commentDate = new Date(comment.date);
 
             // Apply time filter if specified
             if (cutoffDate && commentDate < cutoffDate) continue;
@@ -904,11 +1048,16 @@ class AsanaClient {
               taskName: task.name,
               taskGid: task.gid,
               taskCompleted: task.completed,
+              taskNotes: task.notes ? task.notes.substring(0, 300) : null,
               projectName: project.name,
               projectGid: project.gid,
+              sectionName: sectionName, // NEW: Which board section this task is in
               text: comment.text,
-              date: comment.created_at,
-              author: comment.created_by?.name || 'Unknown',
+              date: comment.date,
+              author: comment.author,
+              // NEW: Include all comments on this task for context
+              allTaskComments: includeFullTaskContext ? sortedComments : null,
+              totalCommentsOnTask: sortedComments.length,
             });
           }
         }

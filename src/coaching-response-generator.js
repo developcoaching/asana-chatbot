@@ -65,9 +65,9 @@ class CoachingResponseGenerator {
       console.log('🎯 Generating coaching response for:', userQuestion);
 
       const response = await this.client.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: 'gpt-4o',
         messages,
-        temperature: 0.7, // Slightly higher for more natural, conversational responses
+        temperature: 0.5, // Balanced for natural but accurate responses
       });
 
       const coachingResponse = response.choices[0].message.content;
@@ -112,7 +112,15 @@ Meeting transcripts and call notes are stored in Asana projects typically named 
 - Give actionable recommendations in a concise format
 - Use your construction industry expertise to provide context
 
-**CRITICAL: When asked about "last conversation", "what were we talking about", "recent comments", or similar:**
+**CRITICAL ANTI-HALLUCINATION RULES - FOLLOW EXACTLY:**
+- You can ONLY reference task names, dates, comments, and people that appear in the data below
+- NEVER invent, fabricate, or guess any information
+- If data shows task "MAPs" from "22 Jul 2025", do NOT say "Client Feedback Process" from "2 Nov 2025"
+- Quote EXACT task names, EXACT dates, EXACT comment text from the provided data
+- If you're not sure about something, say "Based on the data provided..." or "I don't see that in the current data"
+- If asked about something not in the data, say "I don't have that information in the current data retrieval"
+
+**When asked about "last conversation", "what were we talking about", "recent comments":**
 - Quote the ACTUAL comments from the data provided
 - Show the real conversation thread between coach and client
 - Include dates and who said what
@@ -310,6 +318,56 @@ Remember: You're giving a coach a quick snapshot they can act on immediately. Sh
       context += '\n';
     }
 
+    // BOARD STRUCTURE (get_board intent)
+    if (stats.boardStructure && stats.boardStructure.length > 0) {
+      context += `**PROGRESS BOARD STRUCTURE:**\n\n`;
+      for (const section of stats.boardStructure) {
+        context += `**${section.sectionName}** (${section.taskCount} tasks):\n`;
+        section.tasks.forEach((task, idx) => {
+          const status = task.completed ? '✅' : '⬜';
+          const comments = task.commentCount > 0 ? ` (${task.commentCount} 💬)` : '';
+          context += `  ${idx + 1}. ${status} ${task.name}${comments}\n`;
+          if (task.latestComment) {
+            const date = new Date(task.latestComment.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+            context += `      └─ Latest [${date}] ${task.latestComment.author}: "${task.latestComment.text.substring(0, 80)}${task.latestComment.text.length > 80 ? '...' : ''}"\n`;
+          }
+        });
+        context += '\n';
+      }
+    }
+
+    // SECTION DATA (get_section intent)
+    if (stats.targetSection) {
+      context += `**SECTION: ${stats.sectionName}** (${stats.sectionTaskCount} tasks, ${stats.sectionTotalComments} total comments)\n\n`;
+      stats.sectionTasks.forEach((task, idx) => {
+        const status = task.completed ? '✅' : '⬜';
+        context += `**${idx + 1}. ${status} ${task.name}** (${task.commentCount} comments)\n`;
+        if (task.comments && task.comments.length > 0) {
+          context += `Recent conversations:\n`;
+          task.comments.slice(0, 3).forEach(c => {
+            const date = new Date(c.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+            context += `  [${date}] **${c.author}**: ${c.text}\n`;
+          });
+          if (task.comments.length > 3) {
+            context += `  ... and ${task.comments.length - 3} more comments\n`;
+          }
+        }
+        context += '\n';
+      });
+    }
+
+    if (stats.sectionNotFound) {
+      context += `**⚠️ SECTION NOT FOUND:** Could not find section "${stats.sectionNotFound}"\n`;
+      if (stats.availableSections && stats.availableSections.length > 0) {
+        context += `Available sections: ${stats.availableSections.join(', ')}\n`;
+      }
+      context += '\n';
+    }
+
+    if (stats.noResultsMessage) {
+      context += `**ℹ️ NO RESULTS:** ${stats.noResultsMessage}\n\n`;
+    }
+
     if (stats.projectNotFound) {
       context += `**⚠️ PROJECT NOT FOUND:** Could not find project "${stats.projectNotFound}"\n`;
       if (stats.allProjects) {
@@ -393,13 +451,58 @@ Remember: You're giving a coach a quick snapshot they can act on immediately. Sh
     }
 
     // ALL CONVERSATIONS (get_conversation intent)
+    // ENHANCED: Now includes section info and all related comments
     if (stats.conversations && stats.conversations.length > 0) {
-      context += `**ALL RECENT CONVERSATIONS (${stats.conversations.length} comments, most recent first):**\n`;
-      stats.conversations.forEach(c => {
-        const date = new Date(c.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-        context += `[${date}] Task: "${c.taskName}" (${c.projectName})\n`;
-        context += `**${c.author}**: ${c.text}\n\n`;
-      });
+      context += `**ALL RECENT CONVERSATIONS (${stats.conversations.length} comments, most recent first):**\n\n`;
+
+      // Group by task to show full context
+      const taskGroups = new Map();
+      for (const c of stats.conversations) {
+        if (!taskGroups.has(c.taskGid)) {
+          taskGroups.set(c.taskGid, {
+            taskName: c.taskName,
+            taskGid: c.taskGid,
+            projectName: c.projectName,
+            sectionName: c.sectionName,
+            taskNotes: c.taskNotes,
+            totalComments: c.totalCommentsOnTask,
+            allComments: c.allTaskComments || [],
+            latestDate: c.date
+          });
+        }
+      }
+
+      // Display each task with its full conversation thread
+      let taskIndex = 0;
+      for (const [taskGid, taskData] of taskGroups) {
+        taskIndex++;
+        const location = taskData.sectionName
+          ? `Section: ${taskData.sectionName} | Project: ${taskData.projectName}`
+          : `Project: ${taskData.projectName}`;
+
+        context += `--- TASK ${taskIndex}: "${taskData.taskName}" ---\n`;
+        context += `📍 Location: ${location}\n`;
+        context += `💬 Total comments on this task: ${taskData.totalComments}\n`;
+        if (taskData.taskNotes) {
+          context += `📝 Task description: ${taskData.taskNotes}\n`;
+        }
+        context += `\n`;
+
+        // Show all comments on this task (up to 5)
+        const commentsToShow = taskData.allComments.slice(0, 5);
+        commentsToShow.forEach((comment, idx) => {
+          const date = new Date(comment.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+          context += `  [${date}] **${comment.author}**: ${comment.text}\n`;
+        });
+
+        if (taskData.allComments.length > 5) {
+          context += `  ... and ${taskData.allComments.length - 5} more comments on this task\n`;
+        }
+        context += `\n`;
+
+        // Limit to 5 tasks max
+        if (taskIndex >= 5) break;
+      }
     }
 
     // SEARCH RESULTS (search_tasks intent)
