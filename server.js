@@ -28,6 +28,10 @@ let slackApp = null;
 const SupabaseClient = require('./src/supabase-client');
 const supabase = new SupabaseClient();
 
+// Initialize Query SOP Handler for conversational clarification
+const QuerySOPHandler = require('./src/query-sop-handler');
+const sopHandler = new QuerySOPHandler();
+
 // Fallback in-memory session storage (used if Supabase not configured)
 const inMemorySessions = new Map();
 
@@ -431,9 +435,42 @@ app.post('/api/chat', async (req, res) => {
 
     if (clientNames.length === 1 && clientNames[0] === 'unknown') {
       return res.json({
-        response: 'I couldn\'t identify which client or project you\'re asking about. Could you be more specific?'
+        response: 'Which client would you like me to look up?'
       });
     }
+
+    // ============================================================
+    // SOP CHECK: Ask clarifying questions for broad queries
+    // ============================================================
+    // Get clarification state from in-memory store
+    const clarificationState = inMemorySessions.get(`clarification_${sessionId}`) || {};
+    const sessionContext = {
+      awaitingClarification: clarificationState.awaitingClarification || false,
+      lastQuestion: clarificationState.lastQuestion || null
+    };
+
+    const clarification = sopHandler.analyzeQuery(intentResult, sessionContext);
+
+    if (clarification && clarification.needsClarification) {
+      console.log(`❓ SOP: Asking clarification for ${clarification.missingField}`);
+
+      // Store clarification state in memory
+      inMemorySessions.set(`clarification_${sessionId}`, {
+        awaitingClarification: true,
+        lastQuestion: clarification.question,
+        pendingIntent: intentResult,
+        clientNames: clientNames
+      });
+
+      return res.json({
+        response: clarification.question,
+        sessionId,
+        awaitingClarification: true
+      });
+    }
+
+    // Clear clarification state if we're proceeding
+    inMemorySessions.delete(`clarification_${sessionId}`);
 
     // Get all teams (clients) once
     console.log('📦 Fetching teams (clients)...');
