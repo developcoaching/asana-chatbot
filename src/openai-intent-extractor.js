@@ -123,7 +123,16 @@ class OpenAIIntentExtractor {
    - "Jamie", "Greg", "Sarah"
    - null if not mentioned
 
-10. **actionData** - For write operations:
+10. **commentAuthor** - Filter comments by who wrote them:
+    - COACHES: "Jamie Mills", "Nick Tobing", "Harmeet Johal", "Greg Wilkes", "Greg"
+    - IMPORTANT: When someone asks "Jamie Mills' comments on [client]" or "what did Jamie say to [client]":
+      - commentAuthor = "Jamie Mills" (the coach)
+      - clientNames = ["[client name]"] (the client whose tasks to search)
+      - Jamie Mills is a COACH, not a client!
+    - Same for Nick Tobing, Harmeet Johal, Greg - they are COACHES
+    - null if not filtering by comment author
+
+11. **actionData** - For write operations:
     - For create_task: { "name": "task name", "notes": "description" }
     - For add_comment: { "text": "comment text" }
     - For update_task: { "completed": true } or other fields
@@ -382,6 +391,55 @@ Query: "What tasks are in the Right next thing for Brad?"
   "searchKeywords": null,
   "taskStatus": null,
   "assignee": null,
+  "commentAuthor": null,
+  "actionData": null
+}
+
+Query: "Jamie Mills last conversation with Lee Wane"
+→ {
+  "clientNames": ["Lee Wane"],
+  "intent": "get_conversation",
+  "taskName": null,
+  "projectName": null,
+  "sectionName": null,
+  "specificDate": null,
+  "timeRange": null,
+  "searchKeywords": null,
+  "taskStatus": null,
+  "assignee": null,
+  "commentAuthor": "Jamie Mills",
+  "actionData": null
+}
+
+Query: "What did Greg say to Brad last week?"
+→ {
+  "clientNames": ["Brad"],
+  "intent": "get_conversation",
+  "taskName": null,
+  "projectName": null,
+  "sectionName": null,
+  "specificDate": null,
+  "timeRange": "last_week",
+  "searchKeywords": null,
+  "taskStatus": null,
+  "assignee": null,
+  "commentAuthor": "Greg",
+  "actionData": null
+}
+
+Query: "Show me Nick Tobing's comments on Rachel's tasks"
+→ {
+  "clientNames": ["Rachel"],
+  "intent": "get_conversation",
+  "taskName": null,
+  "projectName": null,
+  "sectionName": null,
+  "specificDate": null,
+  "timeRange": null,
+  "searchKeywords": null,
+  "taskStatus": null,
+  "assignee": null,
+  "commentAuthor": "Nick Tobing",
   "actionData": null
 }`;
 
@@ -422,6 +480,7 @@ When user asks follow-up questions about previous results, interpret them correc
   "searchKeywords": ["array"] or null,
   "taskStatus": "string or null",
   "assignee": "string or null",
+  "commentAuthor": "string or null",
   "actionData": {object} or null
 }`;
 
@@ -490,6 +549,7 @@ When user asks follow-up questions about previous results, interpret them correc
         searchKeywords: extracted.searchKeywords || null,
         taskStatus: extracted.taskStatus || null,
         assignee: extracted.assignee || null,
+        commentAuthor: extracted.commentAuthor || null,
         actionData: extracted.actionData || null,
         success: true,
       };
@@ -507,6 +567,7 @@ When user asks follow-up questions about previous results, interpret them correc
         searchKeywords: null,
         taskStatus: null,
         assignee: null,
+        commentAuthor: null,
         actionData: null,
         success: false,
         error: error.message,

@@ -399,6 +399,7 @@ app.post('/api/chat', async (req, res) => {
       searchKeywords,
       taskStatus,
       assignee,
+      commentAuthor,
       actionData
     } = intentResult;
 
@@ -426,6 +427,7 @@ app.post('/api/chat', async (req, res) => {
     if (searchKeywords) console.log(`🔍 Keywords: ${searchKeywords.join(', ')}`);
     if (taskStatus) console.log(`📊 Status filter: ${taskStatus}`);
     if (assignee) console.log(`👤 Assignee filter: ${assignee}`);
+    if (commentAuthor) console.log(`💬 Comment author filter: ${commentAuthor}`);
 
     if (clientNames.length === 1 && clientNames[0] === 'unknown') {
       return res.json({
@@ -486,10 +488,20 @@ app.post('/api/chat', async (req, res) => {
         };
 
         if (clientNames.length > 1 || intent === 'get_conversation' || intent === 'compare') {
-          const conversations = await asanaClient.getAllConversations(teamGid, {
+          let conversations = await asanaClient.getAllConversations(teamGid, {
             timeRange: timeRange,
             limit: 10
           });
+
+          // Filter by comment author if specified
+          if (commentAuthor && conversations && conversations.length > 0) {
+            const authorLower = commentAuthor.toLowerCase();
+            conversations = conversations.filter(conv => {
+              const convAuthor = (conv.author || '').toLowerCase();
+              return convAuthor.includes(authorLower) || authorLower.includes(convAuthor.split(' ')[0]);
+            });
+          }
+
           clientStats.conversations = conversations;
           clientStats.latestConversation = conversations[0] || null;
         }
@@ -537,10 +549,20 @@ app.post('/api/chat', async (req, res) => {
 
       // For multi-client queries, fetch conversations for each
       if (clientNames.length > 1 || intent === 'get_conversation' || intent === 'compare') {
-        const conversations = await asanaClient.getAllConversations(teamGid, {
+        let conversations = await asanaClient.getAllConversations(teamGid, {
           timeRange: timeRange,
           limit: 10
         });
+
+        // Filter by comment author if specified
+        if (commentAuthor && conversations && conversations.length > 0) {
+          const authorLower = commentAuthor.toLowerCase();
+          conversations = conversations.filter(conv => {
+            const convAuthor = (conv.author || '').toLowerCase();
+            return convAuthor.includes(authorLower) || authorLower.includes(convAuthor.split(' ')[0]);
+          });
+        }
+
         clientStats.conversations = conversations;
         clientStats.latestConversation = conversations[0] || null;
       }
@@ -743,11 +765,24 @@ app.post('/api/chat', async (req, res) => {
     } else if (intent === 'get_conversation') {
       // Get all recent conversations/comments
       console.log('💬 Fetching all conversations...');
-      stats.conversations = await asanaClient.getAllConversations(teamGid, {
+      let conversations = await asanaClient.getAllConversations(teamGid, {
         projectGid: projectName ? (await asanaClient.findProjectByName(teamGid, projectName))?.gid : null,
         timeRange: timeRange,
         limit: 30
       });
+
+      // Filter by comment author if specified (e.g., "Jamie Mills' comments on Lee Wane")
+      if (commentAuthor && conversations && conversations.length > 0) {
+        console.log(`🔍 Filtering comments by author: ${commentAuthor}`);
+        const authorLower = commentAuthor.toLowerCase();
+        conversations = conversations.filter(conv => {
+          const convAuthor = (conv.author || '').toLowerCase();
+          return convAuthor.includes(authorLower) || authorLower.includes(convAuthor.split(' ')[0]);
+        });
+        console.log(`📝 Found ${conversations.length} comments from ${commentAuthor}`);
+      }
+
+      stats.conversations = conversations;
 
     } else if (intent === 'search_tasks') {
       // Search tasks by keywords

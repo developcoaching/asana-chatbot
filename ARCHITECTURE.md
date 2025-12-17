@@ -745,5 +745,74 @@ The human provides **direction** and **verification**, while the AI provides **a
 
 ---
 
-*Last Updated: December 16, 2024 (Session 2)*
+---
+
+## Phase 11: Extended Section Recognition (December 17, 2024)
+
+### Human Input:
+> "check alexandra powell right next thing section in progress project and tell me what tasks are there"
+
+### AI Analysis:
+**Problem Identified:** Query returned "I don't have access to the Right Next Thing section" even though the section exists.
+
+**Root Cause:** The OpenAI intent extractor only knew about 5 section names:
+- PLAN, ATTRACT, CONVERT, DELIVER, SCALE
+
+But Asana boards have additional sections:
+- Right next thing
+- Meetings / 1-1 Meetings
+- Build & Scale Summit 2025
+- Boardroom
+
+**Result:** When user asked for "Right next thing", GPT defaulted to `sectionName: "PLAN"` because it didn't recognize the section.
+
+### AI Solution: Extended Section Recognition
+
+**Updated `src/openai-intent-extractor.js`:**
+
+```javascript
+// OLD: Only 5 sections
+sectionName: "PLAN", "ATTRACT", "CONVERT", "DELIVER", "SCALE"
+
+// NEW: All 9+ sections
+sectionName:
+  - "PLAN", "ATTRACT", "CONVERT", "DELIVER", "SCALE"
+  - "Right next thing" - Priority/next action tasks
+  - "Meetings", "1-1 Meetings" - Meeting-related tasks
+  - "Build & Scale Summit 2025", "Build & Scale Summmit 2025" - Summit tasks
+  - "Boardroom" - Boardroom-related tasks
+```
+
+**Added instruction:** `IMPORTANT: Return the section name EXACTLY as user says it (e.g., "Right next thing" not "PLAN")`
+
+**Added example queries:**
+```
+Query: "Check alexandra's right next thing section"
+→ { "sectionName": "Right next thing" }
+
+Query: "What tasks are in the Right next thing for Brad?"
+→ { "sectionName": "Right next thing" }
+```
+
+### Verification Test:
+```bash
+curl -X POST http://localhost:3000/api/chat -d '{"message": "check alexandra powell right next thing section"}'
+```
+
+**Before (broken):**
+> "I don't have access to the Right Next Thing section..."
+
+**After (working):**
+> In the "Right Next Thing" section for Alexandra Powell:
+> 1. ✅ PDC Flyers x 1,000
+> 2. ✅ P&L last 3 months
+> 3. ✅ Week 1- Software
+> 4. ⬜ Week 2- Time
+> ...13 tasks total
+
+**Commit:** `a9aae27` - "Add section recognition for Right next thing, Meetings, and other board sections"
+
+---
+
+*Last Updated: December 17, 2024 (Session 3)*
 *Generated with Claude Code (Opus 4.5)*
