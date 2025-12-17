@@ -814,5 +814,178 @@ curl -X POST http://localhost:3000/api/chat -d '{"message": "check alexandra pow
 
 ---
 
+## Phase 12: Coach Comment Author Filter (December 17, 2024)
+
+### Human Input:
+> "Jamie Mills is one of the coaches. When I ask 'what is the last comment from jamie mills in lee wanes tasks', it doesn't find it."
+
+### AI Analysis:
+**Problem Identified:** The system was treating "Jamie Mills" as a CLIENT instead of recognizing her as a COACH whose comments should be filtered.
+
+**Root Cause:** The intent extractor had no concept of "comment author" - it only knew about clients, tasks, and sections.
+
+### AI Solution: Comment Author Filter
+
+**Added `commentAuthor` field to intent extraction:**
+```javascript
+// NEW field in openai-intent-extractor.js
+10. **commentAuthor** - Filter comments by who wrote them:
+    - COACHES: "Jamie Mills", "Nick Tobing", "Harmeet Johal", "Greg Wilkes", "Greg"
+    - IMPORTANT: When someone asks "Jamie Mills' comments on [client]":
+      - commentAuthor = "Jamie Mills" (the coach)
+      - clientNames = ["[client name]"] (the client whose tasks to search)
+```
+
+**Added filtering in server.js:**
+```javascript
+if (commentAuthor && conversations && conversations.length > 0) {
+  const authorLower = commentAuthor.toLowerCase();
+  conversations = conversations.filter(conv => {
+    const convAuthor = (conv.author || '').toLowerCase();
+    return convAuthor.includes(authorLower);
+  });
+}
+```
+
+### Verification:
+```
+Query: "Greg comments on Alexandra Powell tasks"
+→ Returns only Greg's comments on Alexandra's tasks
+```
+
+**Commit:** `058f426` - "Add commentAuthor filter for coach-specific comment queries"
+
+---
+
+## Phase 13: SOP-Based Conversational Clarification (December 17, 2024)
+
+### Human Input:
+> "Your comment retrieval method needs to be better. Instead of directly going and searching, why don't you make your conversation more fluid? If a customer asks 'what was my last conversation with Jamie?', you can come back and ask 'Do you recall which section or task?' - more like an assistant thing rather than just fetching whatever."
+
+### AI Decision: Standard Operating Procedure (SOP) for Query Handling
+
+Instead of immediately searching everything (and potentially missing data), the assistant now asks clarifying questions **ONE AT A TIME** when queries are broad.
+
+### SOP Checklist:
+
+| Field | Required? | When to Ask |
+|-------|-----------|-------------|
+| Client name | ✅ Required | If missing |
+| Section OR Task | Helpful | For conversation/comment queries without specifics |
+| Time frame | Helpful | For narrowing results |
+| Person filter | Helpful | For coach-specific comments |
+
+### Implementation: `src/query-sop-handler.js` (NEW FILE)
+
+```javascript
+class QuerySOPHandler {
+  analyzeQuery(intentResult, sessionContext) {
+    // RULE 1: Must have a client
+    if (!hasClient) {
+      return { needsClarification: true, question: "Which client?", missingField: 'client' };
+    }
+
+    // RULE 2: For conversation queries without specifics, ask for section
+    if (intent === 'get_conversation' && !hasSection && !hasTask && !hasTimeFrame) {
+      return {
+        needsClarification: true,
+        question: "Do you remember which section or task? Or an approximate time?",
+        missingField: 'location'
+      };
+    }
+
+    // Query has enough specificity - proceed
+    return null;
+  }
+}
+```
+
+### Example Flows:
+
+**Broad query → Ask clarification:**
+```
+User: "jamie mills last conversation with lee wane"
+Bot:  "Do you remember which section or task Jamie Mills's comment was on?
+      • A specific task name (like "P&L Tracker" or "Website")
+      • A board section (PLAN, ATTRACT, CONVERT, DELIVER, SCALE, Right next thing)
+      • Or an approximate time (last week, last month)?"
+User: "check the PLAN section"
+Bot:  [Shows PLAN section with all comments]
+```
+
+**Specific query → Proceed directly:**
+```
+User: "show me brad PLAN section"
+Bot:  [Immediately shows results - no clarification needed]
+```
+
+### Key Principles:
+1. **Ask ONE question at a time** - Don't overwhelm with multiple questions
+2. **Text-friendly** - Keep responses conversational, not robotic
+3. **Guide the user** - Provide examples of what they can say
+4. **Know when to proceed** - If query has enough info, don't ask unnecessary questions
+
+### Integration in server.js:
+```javascript
+const clarification = sopHandler.analyzeQuery(intentResult, sessionContext);
+
+if (clarification && clarification.needsClarification) {
+  return res.json({
+    response: clarification.question,
+    awaitingClarification: true
+  });
+}
+
+// Proceed with search...
+```
+
+**Commit:** `bcd67c0` - "Add SOP-based conversational clarification for broad queries"
+
+---
+
+## File Structure (Updated)
+
+```
+/Users/equipp/DEVELOP ASANA GPT/
+├── server.js                          # Express server, API routes, intent routing
+├── src/
+│   ├── asana-client.js               # All Asana API interactions
+│   ├── openai-intent-extractor.js    # AI-powered query parsing (now with commentAuthor)
+│   ├── coaching-response-generator.js # AI response formatting
+│   ├── client-matcher.js             # Two-phase scoring client matcher
+│   ├── language-preprocessor.js      # Typo/shorthand/terminology normalization
+│   ├── date-normalizer.js            # Deterministic date parsing
+│   ├── query-sop-handler.js          # SOP for conversational clarification (NEW)
+│   ├── google-sheets-client.js       # P&L financial data
+│   ├── supabase-client.js            # Session persistence
+│   └── slack-bot.js                  # Slack integration
+├── public/
+│   ├── index.html                    # ChatGPT-style UI
+│   └── assets/
+│       ├── js/script.js              # Frontend logic
+│       └── css/style.css             # Styling
+├── ARCHITECTURE.md                    # This file - engineering decisions
+├── INTENT_REFERENCE.md               # Pipeline documentation
+└── *.md                              # Other documentation files
+```
+
+---
+
+## Key Engineering Decisions Summary (Updated)
+
+| Decision | Rationale | Impact |
+|----------|-----------|--------|
+| Team-based not Project-based | Asana workspace organized by client teams | All 67 clients now accessible |
+| OpenAI for intent extraction | Complex natural language parsing needed | 13-field structured extraction |
+| Fuzzy matching for names | Users say "Dale" not "Dale Marshall" | 95%+ match accuracy |
+| Supabase for sessions | Need persistent conversation history | Cross-session context |
+| Multi-client arrays | Users ask about "Dale, John and Brad" | Parallel data fetching |
+| Board section support | Coaches organize by PLAN/CONVERT/DELIVER | Section-specific queries |
+| Comment author filter | "Jamie's comments on Lee Wane" | Coach-specific comment search |
+| SOP-based clarification | Avoid missing data from broad searches | Conversational, accurate results |
+| One question at a time | Text-friendly, not overwhelming | Better UX |
+
+---
+
 *Last Updated: December 17, 2024 (Session 3)*
 *Generated with Claude Code (Opus 4.5)*
