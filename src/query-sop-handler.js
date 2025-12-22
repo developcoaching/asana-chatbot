@@ -63,27 +63,13 @@ class QuerySOPHandler {
       };
     }
 
-    // RULE 2: For conversation/comment queries without specifics, ask for section
+    // RULE 2: For conversation/comment queries - JUST DO IT
+    // Don't ask for clarification. If they have a client name, search and return results.
+    // The LLM will provide context and the user can ask follow-ups if needed.
     if (intent === 'get_conversation' || intent === 'get_comment') {
-      // If searching for coach comments but no section/task specified
-      if (hasCommentAuthor && !hasSection && !hasTask && !hasTimeFrame) {
-        return {
-          needsClarification: true,
-          question: `Do you remember which section or task ${commentAuthor}'s comment was on? For example:\n• A specific task name (like "P&L Tracker" or "Website")\n• A board section (PLAN, ATTRACT, CONVERT, DELIVER, SCALE, Right next thing)\n• Or an approximate time (last week, last month)?`,
-          missingField: 'location',
-          suggestions: ['PLAN section', 'ATTRACT section', 'Right next thing', 'Last week', 'Last month']
-        };
-      }
-
-      // General conversation query without any filters
-      if (!hasSection && !hasTask && !hasTimeFrame && !hasCommentAuthor) {
-        return {
-          needsClarification: true,
-          question: `I can find conversations for ${clientNames[0]}. To give you the most relevant results, could you tell me:\n• Which section to check? (PLAN, ATTRACT, CONVERT, DELIVER, SCALE, Right next thing)\n• Or a specific task name?\n• Or a time frame (last week, last month)?`,
-          missingField: 'scope',
-          suggestions: ['PLAN section', 'Recent conversations', 'Right next thing', 'Last 2 weeks']
-        };
-      }
+      // Client name is enough - proceed with search
+      // Returns most recent conversations, LLM provides context
+      return null;
     }
 
     // RULE 3: For status queries that are too broad

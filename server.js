@@ -525,13 +525,15 @@ app.post('/api/chat', async (req, res) => {
         };
 
         if (clientNames.length > 1 || intent === 'get_conversation' || intent === 'compare') {
-          let conversations = await asanaClient.getAllConversations(teamGid, {
+          // Use intelligent retrieval (Supabase for pilot clients)
+          let conversations = await asanaClient.getConversationsIntelligent(clientName_matched, teamGid, {
             timeRange: timeRange,
+            commentAuthor: commentAuthor,
             limit: 10
           });
 
-          // Filter by comment author if specified
-          if (commentAuthor && conversations && conversations.length > 0) {
+          // Filter by comment author if specified (for non-pilot clients)
+          if (commentAuthor && conversations && conversations.length > 0 && !conversations[0]?.source) {
             const authorLower = commentAuthor.toLowerCase();
             conversations = conversations.filter(conv => {
               const convAuthor = (conv.author || '').toLowerCase();
@@ -586,13 +588,15 @@ app.post('/api/chat', async (req, res) => {
 
       // For multi-client queries, fetch conversations for each
       if (clientNames.length > 1 || intent === 'get_conversation' || intent === 'compare') {
-        let conversations = await asanaClient.getAllConversations(teamGid, {
+        // Use intelligent retrieval (Supabase for pilot clients)
+        let conversations = await asanaClient.getConversationsIntelligent(clientName_matched, teamGid, {
           timeRange: timeRange,
+          commentAuthor: commentAuthor,
           limit: 10
         });
 
-        // Filter by comment author if specified
-        if (commentAuthor && conversations && conversations.length > 0) {
+        // Filter by comment author if specified (for non-pilot clients)
+        if (commentAuthor && conversations && conversations.length > 0 && !conversations[0]?.source) {
           const authorLower = commentAuthor.toLowerCase();
           conversations = conversations.filter(conv => {
             const convAuthor = (conv.author || '').toLowerCase();
@@ -627,6 +631,8 @@ app.post('/api/chat', async (req, res) => {
       // Include multi-client results if more than one client
       multiClientResults: clientNames.length > 1 ? multiClientResults : null,
       isMultiClient: clientNames.length > 1,
+      // Pass author filter to LLM for intelligent filtering
+      commentAuthorFilter: commentAuthor || null,
     };
 
     // ============================================================
@@ -802,14 +808,17 @@ app.post('/api/chat', async (req, res) => {
     } else if (intent === 'get_conversation') {
       // Get all recent conversations/comments
       console.log('💬 Fetching all conversations...');
-      let conversations = await asanaClient.getAllConversations(teamGid, {
+
+      // Use intelligent retrieval (Supabase for pilot clients)
+      let conversations = await asanaClient.getConversationsIntelligent(clientName_matched, teamGid, {
         projectGid: projectName ? (await asanaClient.findProjectByName(teamGid, projectName))?.gid : null,
         timeRange: timeRange,
+        commentAuthor: commentAuthor,
         limit: 30
       });
 
-      // Filter by comment author if specified (e.g., "Jamie Mills' comments on Lee Wane")
-      if (commentAuthor && conversations && conversations.length > 0) {
+      // Filter by comment author if specified (for non-pilot clients only)
+      if (commentAuthor && conversations && conversations.length > 0 && !conversations[0]?.source) {
         console.log(`🔍 Filtering comments by author: ${commentAuthor}`);
         const authorLower = commentAuthor.toLowerCase();
         conversations = conversations.filter(conv => {

@@ -231,12 +231,13 @@ class AsanaClient {
 
   /**
    * Get stories (comments/activity) for a task
-   * Now includes author name for coach/client context
+   * Now includes author name AND gid for better tracking
+   * The gid allows identification even when name is "Private User" or missing
    */
   async getTaskStories(taskId) {
     try {
       const response = await this.request(
-        `/tasks/${taskId}/stories?opt_fields=created_at,text,type,created_by.name`
+        `/tasks/${taskId}/stories?opt_fields=created_at,text,type,resource_subtype,created_by.name,created_by.gid`
       );
       return response.data || [];
     } catch (error) {
@@ -438,6 +439,7 @@ class AsanaClient {
               .map(c => ({
                 text: c.text,
                 author: c.created_by?.name || 'Unknown',
+                authorGid: c.created_by?.gid || null,
                 date: c.created_at
               }))
               // Sort by date, newest first
@@ -528,7 +530,8 @@ class AsanaClient {
                 comments: comments.slice(0, 5).map(c => ({
                   text: c.text.substring(0, 1000),
                   date: c.created_at,
-                  author: c.created_by?.name || 'Unknown' // Include who wrote the comment
+                  author: c.created_by?.name || 'Unknown',
+                  authorGid: c.created_by?.gid || null
                 })),
                 sectionName: section.name,
                 projectName: 'Progress'
@@ -566,7 +569,8 @@ class AsanaClient {
                 comments: comments.slice(0, 5).map(c => ({
                   text: c.text.substring(0, 1000),
                   date: c.created_at,
-                  author: c.created_by?.name || 'Unknown' // Include who wrote the comment
+                  author: c.created_by?.name || 'Unknown',
+                  authorGid: c.created_by?.gid || null
                 })),
                 projectName: project.name
               });
@@ -613,11 +617,12 @@ class AsanaClient {
             taskName: task.name,
             taskCompleted: task.completed,
             taskNotes: task.notes ? task.notes.substring(0, 200) : null,
-            // Get more comments (up to 8) for fuller context - now with author
+            // Get more comments (up to 8) for fuller context - now with author + gid
             comments: comments.slice(0, 8).map(c => ({
               text: c.text.substring(0, 500), // Allow longer text for context
               date: c.created_at,
-              author: c.created_by?.name || 'Unknown', // Include who wrote the comment
+              author: c.created_by?.name || 'Unknown',
+              authorGid: c.created_by?.gid || null,
             })),
             totalComments: comments.length,
           };
@@ -1032,6 +1037,7 @@ class AsanaClient {
               text: c.text,
               date: c.created_at,
               author: c.created_by?.name || 'Unknown',
+              authorGid: c.created_by?.gid || null,
             }))
             .sort((a, b) => new Date(b.date) - new Date(a.date));
 
@@ -1051,11 +1057,12 @@ class AsanaClient {
               taskNotes: task.notes ? task.notes.substring(0, 300) : null,
               projectName: project.name,
               projectGid: project.gid,
-              sectionName: sectionName, // NEW: Which board section this task is in
+              sectionName: sectionName, // Which board section this task is in
               text: comment.text,
               date: comment.date,
               author: comment.author,
-              // NEW: Include all comments on this task for context
+              authorGid: comment.authorGid, // Include for disambiguation
+              // Include all comments on this task for context
               allTaskComments: includeFullTaskContext ? sortedComments : null,
               totalCommentsOnTask: sortedComments.length,
             });
@@ -1273,6 +1280,7 @@ class AsanaClient {
             text: c.text,
             date: c.created_at,
             author: c.created_by?.name || 'Unknown',
+            authorGid: c.created_by?.gid || null,
           }));
 
         // Filter by date if specified
@@ -1329,6 +1337,187 @@ class AsanaClient {
     });
 
     return result;
+  }
+
+  // ============================================================
+  // SUPABASE-FIRST RETRIEVAL (Pilot: 5 clients)
+  // ============================================================
+
+  /**
+   * Check if a client is in the Supabase pilot program
+   */
+  isPilotClient(clientName) {
+    // ALL CLIENTS - using Supabase for everyone
+    const PILOT_CLIENTS = [
+      'abigail jerram',
+      'adam cook',
+      'adam, marv, tom',
+      'aileen andrews',
+      'alexandra & richard powell',
+      'alistair pottinger',
+      'anthony baines',
+      'anthony litchfield',
+      'ben townsend & ally wilson',
+      'brad goodridge',
+      'bradley jackson',
+      'bradley wheaton',
+      'charlie sutton',
+      'chris james',
+      'dale marshall',
+      'declan o\'neill',
+      'deepak gupta',
+      'duncan mcintosh',
+      'ellis wiseman',
+      'frank rawle',
+      'gary gillett',
+      'george munton',
+      'graeme taylor',
+      'huw & mark carrel',
+      'james wilcock',
+      'jay & kayleigh mardell',
+      'john eastwood',
+      'jordan stubley',
+      'julian thorngate',
+      'kate & james -kiwi',
+      'krzysztof poplawski',
+      'lee wane',
+      'marek przychocki',
+      'mark & connor',
+      'martin durham',
+      'matthew carter',
+      'matthew mcfarlane',
+      'mike calvert',
+      'mikey chambers & chris angell',
+      'mostyn pritchard',
+      'nick cahill',
+      'owain bancroft',
+      'paul & roxanne murphy',
+      'rachel moors',
+      'ray delaney',
+      'reece blake',
+      'robert mcgill',
+      'ryan  meredith',
+      'sam & rose chambers',
+      'sean ryan',
+      'terry diver',
+      'tim day',
+    ];
+    return PILOT_CLIENTS.includes(clientName.toLowerCase());
+  }
+
+  /**
+   * Get comments from Supabase mirror instead of Asana API
+   * Used for pilot clients to solve the "missing comments" problem
+   *
+   * @param {string} clientName - Client name
+   * @param {object} filters - Optional filters
+   * @returns {Promise<array>} - Comments from Supabase
+   */
+  async getCommentsFromSupabase(clientName, filters = {}) {
+    const { createClient } = require('@supabase/supabase-js');
+
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      console.log('⚠️  Supabase not configured, falling back to Asana API');
+      return null;
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    // 2-month time window (default)
+    const twoMonthsAgo = new Date();
+    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+    const cutoffDate = twoMonthsAgo.toISOString();
+
+    console.log(`📦 Fetching comments from Supabase for ${clientName} (last 2 months)...`);
+
+    let query = supabase
+      .from('asana_mirror')
+      .select('*')
+      .ilike('client_name', clientName)
+      .gte('created_at', cutoffDate)  // Only last 2 months
+      .order('created_at', { ascending: false });
+
+    // Apply filters
+    if (filters.authorName) {
+      query = query.ilike('author_name', `%${filters.authorName}%`);
+    }
+
+    if (filters.isCoach) {
+      query = query.eq('is_coach_comment', true);
+    }
+
+    if (filters.sectionName) {
+      query = query.ilike('section_name', `%${filters.sectionName}%`);
+    }
+
+    if (filters.taskName) {
+      query = query.ilike('task_name', `%${filters.taskName}%`);
+    }
+
+    // Limit to 20 comments max for LLM context
+    query = query.limit(filters.limit || 20);
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.log(`❌ Supabase error: ${error.message}`);
+      return null;
+    }
+
+    console.log(`✅ Retrieved ${data.length} comments from Supabase`);
+
+    // Transform to match existing comment format
+    return data.map(row => ({
+      taskName: row.task_name,
+      taskGid: row.task_gid,
+      sectionName: row.section_name,
+      projectName: row.project_name,
+      text: row.comment_text,
+      date: row.created_at,
+      author: row.author_name,
+      authorGid: row.author_gid,
+      isCoachComment: row.is_coach_comment,
+      coachInferred: row.coach_inferred,
+      // Source tracking
+      source: 'supabase_mirror'
+    }));
+  }
+
+  /**
+   * Get all conversations - with Supabase fallback for pilot clients
+   * This is the intelligent retrieval method
+   *
+   * NOTE: For pilot clients, we get ALL comments and let the LLM filter intelligently
+   * No strict author matching - the LLM handles context-aware filtering
+   */
+  async getConversationsIntelligent(clientName, teamGid, options = {}) {
+    // Check if this is a pilot client
+    if (this.isPilotClient(clientName)) {
+      console.log(`🚀 Using Supabase-first retrieval for pilot client: ${clientName}`);
+
+      // Get ALL comments - let LLM do the intelligent filtering
+      const supabaseComments = await this.getCommentsFromSupabase(clientName, {
+        sectionName: options.sectionName,
+        taskName: options.taskName,
+        limit: options.limit || 50  // Get more for LLM to work with
+      });
+
+      if (supabaseComments && supabaseComments.length > 0) {
+        // Mark that LLM should filter by author if specified
+        if (options.commentAuthor) {
+          supabaseComments.requestedAuthor = options.commentAuthor;
+        }
+        return supabaseComments;
+      }
+
+      console.log('   Supabase returned no results, falling back to Asana API');
+    }
+
+    // Fall back to Asana API
+    return await this.getAllConversations(teamGid, options);
   }
 }
 

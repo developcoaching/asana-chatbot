@@ -987,5 +987,202 @@ if (clarification && clarification.needsClarification) {
 
 ---
 
-*Last Updated: December 17, 2024 (Session 3)*
+## Phase 14: Supabase-First Comment Retrieval (December 22, 2024)
+
+### Human Input:
+> "There's an intelligence gap in comment retrieval. Comments from 'Private User' or coach GIDs are being filtered out. Create a mirrored database in Supabase as a source of truth."
+
+### AI Analysis:
+**Problem Identified:** Verified via raw Asana API that:
+1. **No "Private User" comments exist** - All 2,000+ comments have proper author names
+2. **Real issue:** Coach comments weren't being retrieved because of strict filtering
+3. **Data WAS there** - Greg Wilkes has 123 comments on Dale Marshall, but queries returned 0
+
+### AI Solution: Supabase Mirror Database
+
+**Phase 1: Database Schema**
+Created `asana_mirror` table in Supabase:
+```sql
+CREATE TABLE asana_mirror (
+  comment_gid TEXT PRIMARY KEY,
+  task_gid TEXT NOT NULL,
+  task_name TEXT NOT NULL,
+  section_name TEXT,
+  client_name TEXT NOT NULL,
+  author_name TEXT,
+  author_gid TEXT,
+  coach_inferred BOOLEAN DEFAULT FALSE,
+  is_coach_comment BOOLEAN DEFAULT FALSE,
+  comment_text TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  synced_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**Phase 2: Full Client Sync (52 Clients)**
+Created `scripts/sync-pilot.js`:
+- Syncs ALL comments for all 52 clients
+- Identity resolution: Tags coach comments automatically
+- Result: **4,518 comments synced** across 52 clients
+
+| Metric | Value |
+|--------|-------|
+| **Clients synced** | 52 |
+| **Total tasks** | 1,507 |
+| **Comments synced** | 4,518 |
+| **Coach comments** | 2,470 |
+
+**Phase 3: Intelligent Retrieval**
+Added to `src/asana-client.js`:
+```javascript
+isPilotClient(clientName) {
+  const PILOT_CLIENTS = ['lee wane', 'dale marshall', 'brad goodridge',
+                         'sam & rose chambers', 'james wilcock'];
+  return PILOT_CLIENTS.includes(clientName.toLowerCase());
+}
+
+async getCommentsFromSupabase(clientName, filters = {}) {
+  // 2-month time window (default)
+  const twoMonthsAgo = new Date();
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+
+  let query = supabase
+    .from('asana_mirror')
+    .select('*')
+    .ilike('client_name', clientName)
+    .gte('created_at', cutoffDate)  // Only last 2 months
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  return data;
+}
+
+async getConversationsIntelligent(clientName, teamGid, options = {}) {
+  if (this.isPilotClient(clientName)) {
+    // Use Supabase for pilot clients
+    return await this.getCommentsFromSupabase(clientName, options);
+  }
+  // Fall back to Asana API for others
+  return await this.getAllConversations(teamGid, options);
+}
+```
+
+**Phase 4: New LLM Prompt**
+Updated `coaching-response-generator.js` with coaching-focused prompt:
+```
+You are an AI assistant for construction business coaches at Develop Coaching.
+
+CONTEXT:
+Coaches manage 60+ clients and can't remember every conversation.
+You are their memory - instantly telling them what's been happening.
+
+THE DATA YOU'RE SEEING:
+Comments from the past 2 months between coaches and clients.
+
+WHAT COACHES TYPICALLY ASK:
+- "What's the latest?" → Show the most recent comment
+- "What did Greg say?" → Filter to that coach's comments
+- "What are the roadblocks?" → Identify blockers mentioned
+```
+
+**Phase 5: Simplified Comment Formatting**
+Fixed the LLM data context to properly display comments:
+```javascript
+// Group comments by task
+for (const c of stats.conversations) {
+  taskGroups.get(key).comments.push({
+    date: c.date,
+    author: c.author,
+    text: c.text
+  });
+}
+
+// Display each task with its comments
+context += `📌 **${location}**\n`;
+for (const comment of taskData.comments) {
+  context += `[${date}] ${comment.author}: "${comment.text}"\n`;
+}
+```
+
+### Verification Test:
+```
+Query: "What is the latest message for Dale Marshall"
+Response: [5 Nov 2025] Dale Marshall on "Boardroom Agenda > Stats for Thursday":
+          "I can make 7.00"
+```
+
+### How to Add More Clients to Supabase:
+
+**Step 1:** Edit `scripts/sync-pilot.js` line 24:
+```javascript
+const PILOT_CLIENTS = [
+  'Lee Wane',
+  'Dale Marshall',
+  // ADD NEW CLIENTS HERE
+  'John Eastwood',
+];
+```
+
+**Step 2:** Run sync:
+```bash
+node scripts/sync-pilot.js
+```
+
+**Step 3:** Update `src/asana-client.js` line 1350 (same list in lowercase)
+
+### Key Files Added/Modified:
+
+| File | Purpose |
+|------|---------|
+| `scripts/sync-pilot.js` | Syncs Asana comments to Supabase |
+| `scripts/setup-asana-mirror.sql` | Database schema |
+| `src/asana-client.js` | Added `getCommentsFromSupabase()`, `isPilotClient()`, `getConversationsIntelligent()` |
+| `src/coaching-response-generator.js` | New LLM prompt + simplified comment formatting |
+
+---
+
+## File Structure (Updated December 22, 2024)
+
+```
+/Users/equipp/DEVELOP ASANA GPT/
+├── server.js                          # Express server, API routes
+├── src/
+│   ├── asana-client.js               # Asana API + Supabase retrieval (1470+ lines)
+│   ├── openai-intent-extractor.js    # AI query parsing
+│   ├── coaching-response-generator.js # AI response formatting (new prompt)
+│   ├── client-matcher.js             # Two-phase scoring
+│   ├── language-preprocessor.js      # Typo normalization
+│   ├── date-normalizer.js            # Date parsing
+│   ├── query-sop-handler.js          # Conversational clarification
+│   ├── google-sheets-client.js       # P&L data
+│   ├── supabase-client.js            # Session persistence
+│   └── slack-bot.js                  # Slack integration
+├── scripts/
+│   ├── sync-pilot.js                 # Supabase comment sync (NEW)
+│   └── setup-asana-mirror.sql        # Database schema (NEW)
+├── tests/
+│   ├── verify-private-user-data.js   # Verification scripts
+│   ├── find-jamie-mills.js
+│   └── verify_fix.js
+├── public/
+│   └── ...                           # ChatGPT-style UI
+├── ARCHITECTURE.md                    # This file
+└── INTENT_REFERENCE.md               # Pipeline docs
+```
+
+---
+
+## Key Engineering Decisions Summary (Updated)
+
+| Decision | Rationale | Impact |
+|----------|-----------|--------|
+| Supabase comment mirror | Fast retrieval, solves "missing comments" | 926 comments synced |
+| 2-month time window | Recent data most relevant, reduces LLM tokens | Focused context |
+| Pilot client approach | Test before full rollout | 5 clients using Supabase |
+| Coaching-focused LLM prompt | Coaches need quick catch-up, not data dumps | Concise, actionable responses |
+| Let LLM filter by author | Simpler than strict code filtering | More flexible queries |
+
+---
+
+*Last Updated: December 22, 2024 (Session 4)*
 *Generated with Claude Code (Opus 4.5)*
