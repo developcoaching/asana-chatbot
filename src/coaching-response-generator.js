@@ -1,8 +1,48 @@
 const { OpenAI } = require('openai');
 const dotenv = require('dotenv');
+const TrainingService = require('./services/training-service');
 
 // Load environment variables
 dotenv.config();
+
+// Training service for knowledge base queries
+const trainingService = new TrainingService();
+
+// Keyword-to-training mapping for automatic advice
+const STRUGGLE_KEYWORDS = {
+  // Financial struggles → Profit First training
+  profit: ['profit first', 'cash flow', 'financial management'],
+  'cash flow': ['profit first', 'cash flow', 'financial management'],
+  'p&l': ['profit first', 'P&L tracking', 'financial reporting'],
+  money: ['profit first', 'cash flow', 'pricing'],
+  pricing: ['profit first', 'pricing strategy', 'margins'],
+  margins: ['profit first', 'margins', 'profitability'],
+
+  // Bottleneck/process struggles → Systems training
+  bottleneck: ['systems', 'processes', 'workflow optimization'],
+  stuck: ['bottleneck', 'process improvement', 'efficiency'],
+  delayed: ['delivery', 'project management', 'on time'],
+  overwhelmed: ['time management', 'delegation', 'VA hiring'],
+  busy: ['time freedom', 'delegation', 'systems'],
+
+  // Marketing/Sales struggles
+  leads: ['lead generation', 'marketing', 'fill your funnel'],
+  marketing: ['marketing', 'brand building', 'social media'],
+  sales: ['sales mastery', 'closing', 'proposals'],
+  'no work': ['lead generation', 'marketing', 'outbound'],
+  quiet: ['lead generation', 'marketing', 'pipeline'],
+
+  // Team/Hiring struggles → Scale training
+  hiring: ['hiring', 'VA', 'team building'],
+  staff: ['team', 'hiring', 'super teams'],
+  va: ['VA hiring', 'virtual assistant', 'delegation'],
+  delegation: ['delegation', 'handoff', 'team'],
+  team: ['super teams', 'team building', 'leadership'],
+
+  // Time struggles
+  time: ['time tracking', 'time freedom', 'efficiency'],
+  'no time': ['time freedom', 'delegation', 'VA']
+};
 
 class CoachingResponseGenerator {
   constructor() {
@@ -29,17 +69,111 @@ class CoachingResponseGenerator {
   }
 
   /**
-   * Generates a conversational coaching response based on the user's question
-   * @param {string} userQuestion - The question the coach asked
-   * @param {string} clientName - Name of the client being discussed
-   * @param {object} projectStats - Asana project statistics
-   * @param {array} conversationHistory - Previous messages in the conversation
-   * @returns {Promise<string>} - Conversational coaching response
+   * Detect struggle keywords in client data to auto-fetch relevant training
+   * Scans comments, task names, and notes for keywords that indicate struggles
    */
+  detectStruggles(clientData) {
+    const foundStruggles = new Set();
+    const textToScan = [];
+
+    // Collect all text from client data
+    if (clientData.conversations) {
+      clientData.conversations.forEach(c => {
+        if (c.text) textToScan.push(c.text.toLowerCase());
+      });
+    }
+    if (clientData.recentComments) {
+      clientData.recentComments.forEach(item => {
+        item.comments?.forEach(c => {
+          if (c.text) textToScan.push(c.text.toLowerCase());
+        });
+      });
+    }
+    if (clientData.tasks) {
+      clientData.tasks.forEach(t => {
+        if (t.name) textToScan.push(t.name.toLowerCase());
+        if (t.notes) textToScan.push(t.notes.toLowerCase());
+      });
+    }
+    if (clientData.targetTask) {
+      if (clientData.targetTask.name) textToScan.push(clientData.targetTask.name.toLowerCase());
+      if (clientData.targetTask.notes) textToScan.push(clientData.targetTask.notes.toLowerCase());
+    }
+    if (clientData.targetTaskComments) {
+      clientData.targetTaskComments.forEach(c => {
+        if (c.text) textToScan.push(c.text.toLowerCase());
+      });
+    }
+
+    // Scan for struggle keywords
+    const allText = textToScan.join(' ');
+    for (const [keyword, searchTerms] of Object.entries(STRUGGLE_KEYWORDS)) {
+      if (allText.includes(keyword)) {
+        searchTerms.forEach(term => foundStruggles.add(term));
+      }
+    }
+
+    return Array.from(foundStruggles);
+  }
+
+  /**
+   * Detect if query is explicitly asking about training/how-to content
+   */
+  isExplicitTrainingQuery(question) {
+    const trainingIndicators = [
+      'how do i', 'how to', 'what is the process', 'what are the steps',
+      'checklist', 'procedure', 'training', 'onboarding',
+      'best practice', 'how should i', 'what should i do',
+      'what is profit first', 'explain', 'teach me'
+    ];
+    const q = question.toLowerCase();
+    return trainingIndicators.some(ind => q.includes(ind));
+  }
+
   async generateResponse(userQuestion, clientName, projectStats, conversationHistory = []) {
     try {
       const systemPrompt = this.buildCoachingPersona();
       const dataContext = this.formatProjectDataForAI(clientName, projectStats);
+
+      // TRAINING KNOWLEDGE - Two paths:
+      // 1. Explicit training query ("how do I implement profit first?")
+      // 2. Auto-detect struggles from client data and fetch relevant training
+      let trainingContext = '';
+      let detectedStruggles = [];
+
+      // Path 1: Explicit training question (detected by server or by method)
+      const isTrainingQuery = projectStats.isTrainingQuery || this.isExplicitTrainingQuery(userQuestion);
+      const trainingQuestion = projectStats.trainingQuestion || userQuestion;
+
+      if (isTrainingQuery) {
+        console.log('📚 Training query detected, searching knowledge base...');
+        const trainingResult = await trainingService.search(trainingQuestion);
+        if (trainingResult.success && trainingResult.chunks.length > 0) {
+          trainingContext = '\n\n--- TRAINING KNOWLEDGE (for your coaching advice) ---\n' +
+            trainingResult.chunks.map(c => `[From: ${c.filename}]\n${c.content}`).join('\n\n---\n\n');
+          console.log(`📚 Found ${trainingResult.chunks.length} relevant training chunks`);
+        }
+      }
+
+      // Path 2: Auto-detect struggles from client data
+      if (!trainingContext && projectStats) {
+        detectedStruggles = this.detectStruggles(projectStats);
+        if (detectedStruggles.length > 0) {
+          console.log(`🔍 Detected client struggles: ${detectedStruggles.join(', ')}`);
+
+          // Search training for the top 2-3 struggle areas
+          const searchQuery = detectedStruggles.slice(0, 3).join(' ');
+          console.log(`📚 Auto-fetching training for: "${searchQuery}"`);
+
+          const trainingResult = await trainingService.search(searchQuery);
+          if (trainingResult.success && trainingResult.chunks.length > 0) {
+            trainingContext = '\n\n--- COACHING ADVICE (from Develop training) ---\n' +
+              `Based on what I see in ${clientName}'s data, here's relevant coaching guidance:\n\n` +
+              trainingResult.chunks.slice(0, 3).map(c => `[${c.filename}]\n${c.content}`).join('\n\n---\n\n');
+            console.log(`📚 Auto-loaded ${trainingResult.chunks.length} training chunks for struggles`);
+          }
+        }
+      }
 
       const messages = [
         {
@@ -48,7 +182,7 @@ class CoachingResponseGenerator {
         },
         {
           role: 'system',
-          content: `Here is the current data for ${clientName}:\n\n${dataContext}`,
+          content: `Here is the current data for ${clientName}:\n\n${dataContext}${trainingContext}`,
         },
       ];
 
@@ -115,6 +249,17 @@ HOW TO RESPOND:
 - Include dates so they know how recent things are
 - If asked about a specific coach and there are none from them, say so clearly
 - Highlight anything that looks like it needs follow-up
+
+TRAINING KNOWLEDGE & COACHING ADVICE:
+When the data includes "TRAINING KNOWLEDGE" or "COACHING ADVICE" sections:
+- This is content from Develop Coaching's training library (Profit First, Sales Mastery, etc.)
+- USE this to give proactive coaching advice to the coach asking
+- Connect the training to the client's specific situation
+- Example: If client mentions "cash flow problems" and training shows Profit First methodology, advise:
+  "Based on what I'm seeing with [Client], they could benefit from implementing Profit First. The key steps are..."
+- Reference the source naturally: "In our Profit First training, we cover..."
+- When struggles are detected automatically, proactively suggest relevant training concepts
+- You ARE Greg - speak with authority about the training content as if you taught it
 
 CRITICAL RULES:
 - ONLY reference data that appears below - never invent information

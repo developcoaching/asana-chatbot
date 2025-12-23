@@ -409,6 +409,92 @@ Before we start coding, let me confirm a few implementation details:
 | **Architecture** | ✅ Designed | Technology stack selected, flow documented |
 | **Cost Analysis** | ✅ Favorable | ~$20-38/month for MVP |
 | **Slack Integration** | ⏳ Ready to start | Need workspace access to set up bot |
+| **Training Q&A** | ✅ Complete | Phase 15 - 972 chunks indexed with RAG |
+| **Supabase Mirror** | ✅ Complete | 52 clients, 4,518 comments synced |
+
+---
+
+## 🎓 Phase 15: Training Knowledge Q&A System (COMPLETE)
+
+### Overview
+Member-facing training Q&A system where coaching members can ask questions about training materials (PDFs, DOCX, transcripts).
+
+### Phase 15.1: Training Content Ingestion ✅
+
+**Database**: Supabase `training_knowledge` table
+- Schema: `id, filename, chunk_index, content, embedding (vector 1536), metadata (jsonb)`
+- Unique constraint: `(filename, chunk_index)`
+
+**Ingestion Script**: `/scripts/ingest-fast.js`
+- Uses `pdftotext` for PDFs (instant extraction)
+- Uses `textutil` for DOCX (macOS native)
+- Streams chunks to DB immediately (no memory issues)
+- 3000 char chunks with 300 char overlap
+
+**Results**:
+- 75 training files processed
+- 972 chunks stored in Supabase
+- Categories: Onboarding, Marketing, Sales Mastery, Systems, Finance, Scale
+
+### Phase 15.2: RAG with Self-Correction Grader ✅
+
+**Service**: `/src/services/training-service.js`
+- Uses LangChain `ChatOpenAI` and `OpenAIEmbeddings`
+- `text-embedding-3-small` for query embeddings
+- Cosine similarity for vector search
+- Grader loop with query rewriting if relevance < 0.7
+
+**Methods**:
+- `search(query, options)` - Vector search with grading
+- `gradeRelevance(query, chunks)` - LLM evaluates relevance (0.0-1.0)
+- `rewriteQuery(query, reason, chunks)` - Rewrites vague queries
+- `answer(query, options)` - Full RAG pipeline with answer generation
+
+### Phase 15.3: Integration with Coaching Bot ✅
+
+**Modified**: `/src/coaching-response-generator.js`
+- Added `TrainingService` import
+- Added `isTrainingQuery()` detection for training-related questions
+- Modified `generateResponse()` to include training context
+- Updated system prompt with training knowledge base instructions
+
+**Training Query Detection**:
+```javascript
+isTrainingQuery(question) {
+  const trainingIndicators = [
+    'how do i', 'how to', 'what is the process', 'what are the steps',
+    'checklist', 'procedure', 'training', 'onboarding',
+    'best practice', 'profit first', 'site visit', 'p&l'
+  ];
+  return trainingIndicators.some(ind => question.toLowerCase().includes(ind));
+}
+```
+
+### Training Topics Indexed
+
+| Category | Files | Description |
+|----------|-------|-------------|
+| Onboarding | 15 | Welcome, Asana setup, VA hiring, time tracking |
+| Marketing | 30 | LinkedIn, Google Ads, Brand building, Lead nurture |
+| Sales Mastery | 3 | Sales process training (pts 1-3) |
+| Systems | 6 | Optimised Office, Off-site systems, Delivery |
+| Finance | 5 | Profit First methodology (pts 1-4) |
+| Scale | 4 | Handoff, AI, Super Teams, Goal Setting |
+| Hotseats | 6 | Real member coaching sessions |
+| Testimonials | 2 | Member success stories (115 chunks each) |
+
+### Testing
+
+```bash
+# Test training service directly
+node src/services/training-service.js "What is profit first?"
+
+# Expected output:
+# Answer: [Profit First explanation from training content]
+# Sources: ['Profit-first-pt-1.pdf', ...]
+# Relevance: 0.4-0.9
+# Attempts: 1-2
+```
 
 ---
 

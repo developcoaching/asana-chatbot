@@ -357,6 +357,21 @@ app.post('/api/chat', async (req, res) => {
       console.log('   Cleaned:', cleanedMessage);
     }
 
+    // PHASE 1.5: Detect training-style questions BEFORE intent extraction
+    // These often confuse the intent extractor (it tries to answer instead of parse)
+    const trainingIndicators = [
+      'how do i', 'how to', 'how can i', 'how should i',
+      'what is the process', 'what are the steps', 'what should i do',
+      'best practice', 'checklist', 'procedure', 'teach me', 'explain'
+    ];
+    const isTrainingStyleQuestion = trainingIndicators.some(ind =>
+      cleanedMessage.toLowerCase().includes(ind)
+    );
+
+    if (isTrainingStyleQuestion) {
+      console.log('📚 Training-style question detected, will use training flow');
+    }
+
     // PHASE 3: Date normalization - parse dates BEFORE GPT
     const dateResult = dateNormalizer.normalizeInText(cleanedMessage);
     let normalizedDate = null;
@@ -384,10 +399,24 @@ app.post('/api/chat', async (req, res) => {
     );
     console.log('📊 Intent result:', JSON.stringify(intentResult, null, 2));
 
+    // Handle failed intent extraction
     if (!intentResult.success) {
-      return res.json({
-        response: 'I had trouble understanding that. Could you rephrase your question?'
-      });
+      // If it's a training-style question and we have a client from session, route to training
+      if (isTrainingStyleQuestion && currentClient) {
+        console.log('📚 Intent failed but detected training question with client context');
+        console.log(`📚 Using session client: ${currentClient}`);
+
+        // Override with training-focused intent
+        intentResult.success = true;
+        intentResult.clientNames = [currentClient];
+        intentResult.clientName = currentClient;
+        intentResult.intent = 'training_query';
+        intentResult.searchKeywords = cleanedMessage.split(' ').filter(w => w.length > 3);
+      } else {
+        return res.json({
+          response: 'I had trouble understanding that. Could you rephrase your question?'
+        });
+      }
     }
 
     // Destructure all extracted fields
@@ -840,6 +869,25 @@ app.post('/api/chat', async (req, res) => {
           limit: 20
         });
       }
+
+    } else if (intent === 'training_query') {
+      // Training-focused query - fetch client data for context, training will be auto-loaded
+      console.log('📚 Training query - fetching client context...');
+
+      // Get some client context for the training response
+      const progressProject = await asanaClient.getTeamProgressProject(teamGid);
+      if (progressProject) {
+        // Get recent conversations for context
+        let conversations = await asanaClient.getConversationsIntelligent(clientName_matched, teamGid, {
+          timeRange: 'last_month',
+          limit: 10
+        });
+        stats.conversations = conversations;
+      }
+
+      // Mark this as a training query so the response generator knows
+      stats.isTrainingQuery = true;
+      stats.trainingQuestion = message;
 
     } else if (intent === 'list_tasks') {
       // List tasks with filters
